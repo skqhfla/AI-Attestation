@@ -42,30 +42,33 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=200, step_size=0.01):
-    """PGD를 사용하여 모델의 클래스 출력이 균등 분포(1/N)가 되도록 이미지 최적화"""
-    target_dist = torch.full((1, num_classes), 1.0 / num_classes).to(DEVICE)
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, step_size=0.02):
+    """PGD를 사용하여 모든 클래스 확률(Sigmoid)이 균등하게 0.2가 되도록 이미지 최적화"""
+    # 각 클래스가 독립적으로 0.2(20%)의 확률을 갖도록 목표 설정
+    target_prob = 0.2
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        # 각 헤드에서 클래스 로짓 추출 후 평균화
-        all_logits = []
+        # 각 헤드에서 클래스 확률(Sigmoid) 추출 후 평균화
+        all_probs = []
         for head in [d32, d16]:
             # head shape: [30, H, W] -> [15, H, W] -> [3_anchors, 5_classes, H, W]
-            c = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
-            avg_logits = c.mean(dim=(0, 2, 3)) # 앵커와 그리드 전체에 대해 평균
-            all_logits.append(avg_logits)
+            p = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
+            avg_p = p.mean(dim=(0, 2, 3)) # 앵커와 그리드 전체에 대해 평균 확률 [5]
+            all_probs.append(avg_p)
         
-        final_logits = torch.stack(all_logits).mean(dim=0).unsqueeze(0)
+        # 전체 5개 클래스에 대한 평균 확률 분포
+        final_avg_probs = torch.stack(all_probs).mean(dim=0)
         
-        # KL Divergence 손실 계산 (Softmax 분포 vs 균등 분포)
-        loss = F.kl_div(F.log_softmax(final_logits, dim=1), target_dist, reduction='batchmean')
+        # L2 Loss: 각 클래스 확률이 0.2에서 벗어난 정도의 제곱합을 최소화
+        loss = ((final_avg_probs - target_prob) ** 2).sum()
         
-        if (i+1) % 50 == 0:
-            print(f"  [Optimization] Iter {i+1}/{max_iters}, Loss: {loss.item():.6f}")
+        if (i+1) % 100 == 0:
+            prob_status = ", ".join([f"{p.item()*100:.1f}%" for p in final_avg_probs])
+            print(f"  [Optimization] Iter {i+1}/{max_iters}, Loss: {loss.item():.6f} | Probs: [{prob_status}]")
 
         model.zero_grad()
         loss.backward()
