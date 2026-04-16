@@ -73,7 +73,8 @@ def load_and_predict_wyze(model, save_dir):
             
             for head in [d32, d16]:
                 # obj_score 채널: 4, 14, 24
-                obj_scores = torch.stack([sigmoid(head[0, 4]), sigmoid(head[0, 14]), sigmoid(head[0, 24])])
+                # head shape: [30, H, W]
+                obj_scores = torch.stack([sigmoid(head[4]), sigmoid(head[14]), sigmoid(head[24])])
                 all_obj_scores.append(obj_scores.mean().item())
                 if obj_scores.max().item() > max_conf:
                     max_conf = obj_scores.max().item()
