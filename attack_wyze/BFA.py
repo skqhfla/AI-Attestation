@@ -25,7 +25,8 @@ class BFA(object):
                     # bit-wise basis tensor. MSB is negative for 2's complement.
                     b_w = 2**torch.arange(start=m.N_bits - 1, end=-1, step=-1).unsqueeze(-1).float()
                     b_w[0] = -b_w[0]
-                    m.register_buffer('b_w', b_w)
+                    # Ensure b_w is registered on the same device as the weights
+                    m.register_buffer('b_w', b_w.to(m.weight.device))
 
     def flip_bit(self, m):
         if self.k_top is None:
