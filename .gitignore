@@ -1,0 +1,64 @@
+
+# model weights
+
+*.pt
+
+*.pth
+
+*.bin
+
+*.onnx
+
+*.ckpt
+
+*.tar
+
+*.tar.gz
+
+
+
+# logs / results
+
+events.out.tfevents*
+
+*.log
+
+save/
+
+runs/
+
+tb_log/
+
+*.pdf
+
+
+# datasets
+
+data/
+
+datasets/
+
+
+
+# python
+
+__pycache__/
+
+*.pyc
+
+.venv/
+
+venv/
+*.ipynb
+*.csv
+
+
+
+# nested repo
+
+models/ML_Decoder/
+attestation/challenges/
+attestation/results/
+attestation/data/
+attestation/checkpoints/
+models/pytorch-image-models/

@@ -1,0 +1,587 @@
+.
+├── BFA_CIFAR.sh
+├── BFA_imagenet.sh
+├── License
+├── README.md
+├── README_pre.md
+├── __pycache__
+│   ├── utils.cpython-310.pyc
+│   └── utils.cpython-36.pyc
+├── _config.yml
+├── assets
+│   └── BFA.jpg
+├── attack
+│   ├── BFA.py
+│   ├── __pycache__
+│   │   ├── BFA.cpython-310.pyc
+│   │   ├── BFA.cpython-36.pyc
+│   │   ├── data_conversion.cpython-310.pyc
+│   │   └── data_conversion.cpython-36.pyc
+│   ├── data_conversion.py
+│   └── random_attack.py
+├── bfa_new.yaml
+├── bfa_old.yaml
+├── data
+│   ├── cifar
+│   │   ├── cifar-10-batches-py
+│   │   │   ├── batches.meta
+│   │   │   ├── data_batch_1
+│   │   │   ├── data_batch_2
+│   │   │   ├── data_batch_3
+│   │   │   ├── data_batch_4
+│   │   │   ├── data_batch_5
+│   │   │   ├── readme.html
+│   │   │   └── test_batch
+│   │   └── cifar-10-python.tar.gz
+│   ├── cifar10
+│   │   ├── cifar-10-batches-py
+│   │   │   ├── batches.meta
+│   │   │   ├── data_batch_1
+│   │   │   ├── data_batch_2
+│   │   │   ├── data_batch_3
+│   │   │   ├── data_batch_4
+│   │   │   ├── data_batch_5
+│   │   │   ├── readme.html
+│   │   │   └── test_batch
+│   │   └── cifar-10-python.tar.gz
+│   └── cifar100
+│       ├── cifar-100-python
+│       │   ├── file.txt~
+│       │   ├── meta
+│       │   ├── test
+│       │   └── train
+│       └── cifar-100-python.tar.gz
+├── dataset_test.py
+├── docs
+│   ├── Code_configuration.md
+│   ├── duplicate_repo.md
+│   └── environment_setup.md
+├── environment.yml
+├── eval_CIFAR.sh
+├── eval_imagenet.sh
+├── eval_imagenet_quan.sh
+├── generate_challege.py
+├── hash_measure
+│   ├── hash_measure.py
+│   ├── hash_measure_2.py
+│   └── hash_measure_3.py
+├── hash_measure.zip
+├── log.txt
+├── main.py
+├── models
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-310.pyc
+│   │   ├── __init__.cpython-36.pyc
+│   │   ├── bin_resnet_cifar.cpython-310.pyc
+│   │   ├── bin_resnet_cifar.cpython-36.pyc
+│   │   ├── bin_vgg_cifar.cpython-310.pyc
+│   │   ├── bin_vgg_cifar.cpython-36.pyc
+│   │   ├── densenet_cifar100.cpython-310.pyc
+│   │   ├── densenet_cifar100.cpython-36.pyc
+│   │   ├── effnet_l2.cpython-310.pyc
+│   │   ├── googlenet_cifar100.cpython-310.pyc
+│   │   ├── googlenet_cifar100.cpython-36.pyc
+│   │   ├── quan_alexnet_imagenet.cpython-310.pyc
+│   │   ├── quan_alexnet_imagenet.cpython-36.pyc
+│   │   ├── quan_densenet_cifar100.cpython-310.pyc
+│   │   ├── quan_densenet_cifar100.cpython-36.pyc
+│   │   ├── quan_googlenet_cifar100.cpython-310.pyc
+│   │   ├── quan_googlenet_cifar100.cpython-36.pyc
+│   │   ├── quan_mobilenet_imagenet.cpython-310.pyc
+│   │   ├── quan_mobilenet_imagenet.cpython-36.pyc
+│   │   ├── quan_mobilenetv2_cifar100.cpython-310.pyc
+│   │   ├── quan_mobilenetv2_cifar100.cpython-36.pyc
+│   │   ├── quan_resnet_cifar.cpython-310.pyc
+│   │   ├── quan_resnet_cifar.cpython-36.pyc
+│   │   ├── quan_resnet_imagenet.cpython-310.pyc
+│   │   ├── quan_resnet_imagenet.cpython-36.pyc
+│   │   ├── quan_shufflenetv2_cifar100.cpython-310.pyc
+│   │   ├── quan_shufflenetv2_cifar100.cpython-36.pyc
+│   │   ├── quan_squeezenet_cifar100.cpython-310.pyc
+│   │   ├── quan_squeezenet_cifar100.cpython-36.pyc
+│   │   ├── quan_swinmldecoder.cpython-310.pyc
+│   │   ├── quan_vgg_cifar.cpython-310.pyc
+│   │   ├── quan_vgg_cifar.cpython-36.pyc
+│   │   ├── quan_wideresnet.cpython-310.pyc
+│   │   ├── quantization.cpython-310.pyc
+│   │   └── quantization.cpython-36.pyc
+│   ├── bin_resnet_cifar.py
+│   ├── bin_vgg_cifar.py
+│   ├── binarization.py
+│   ├── densenet_cifar100.py
+│   ├── effnet_l2.py
+│   ├── googlenet_cifar100.py
+│   ├── quan_alexnet_imagenet.py
+│   ├── quan_densenet_cifar100.py
+│   ├── quan_googlenet_cifar100.py
+│   ├── quan_mobilenet_imagenet.py
+│   ├── quan_mobilenetv2_cifar100.py
+│   ├── quan_resnet_cifar.py
+│   ├── quan_resnet_imagenet.py
+│   ├── quan_shufflenetv2_cifar100.py
+│   ├── quan_squeezenet_cifar100.py
+│   ├── quan_swinmldecoder.py
+│   ├── quan_vgg_cifar.py
+│   ├── quan_wideresnet.py
+│   ├── quantization.py
+│   ├── sam
+│   │   ├── CONTRIBUTING
+│   │   ├── LICENSE
+│   │   ├── OWNERS
+│   │   ├── README.md
+│   │   ├── __init__.py
+│   │   ├── autoaugment
+│   │   │   ├── __init__.py
+│   │   │   ├── autoaugment.py
+│   │   │   ├── autoaugment_test.py
+│   │   │   └── policies.py
+│   │   ├── figures
+│   │   │   ├── no_sam.png
+│   │   │   ├── sam_wide.png
+│   │   │   └── summary_plot.png
+│   │   ├── requirements.txt
+│   │   └── sam_jax
+│   │       ├── __init__.py
+│   │       ├── datasets
+│   │       │   ├── __init__.py
+│   │       │   ├── augmentation.py
+│   │       │   ├── dataset_source.py
+│   │       │   ├── dataset_source_imagenet.py
+│   │       │   ├── dataset_source_imagenet_test.py
+│   │       │   └── dataset_source_test.py
+│   │       ├── efficientnet
+│   │       │   ├── __init__.py
+│   │       │   ├── efficientnet.py
+│   │       │   ├── efficientnet_test.py
+│   │       │   ├── optim.py
+│   │       │   └── optim_test.py
+│   │       ├── imagenet_models
+│   │       │   ├── __init__.py
+│   │       │   ├── load_model.py
+│   │       │   ├── load_model_test.py
+│   │       │   ├── resnet.py
+│   │       │   └── resnet_test.py
+│   │       ├── models
+│   │       │   ├── __init__.py
+│   │       │   ├── load_model.py
+│   │       │   ├── load_model_test.py
+│   │       │   ├── pyramidnet.py
+│   │       │   ├── utils.py
+│   │       │   ├── wide_resnet.py
+│   │       │   └── wide_resnet_shakeshake.py
+│   │       ├── train.py
+│   │       └── training_utils
+│   │           ├── __init__.py
+│   │           ├── flax_training.py
+│   │           └── flax_training_test.py
+│   ├── sam.py
+│   ├── test_model.py
+│   └── vanilla_models
+│       ├── __pycache__
+│       │   ├── vanilla_mobilenet_imagenet.cpython-310.pyc
+│       │   ├── vanilla_mobilenet_imagenet.cpython-36.pyc
+│       │   ├── vanilla_resnet_cifar.cpython-310.pyc
+│       │   ├── vanilla_resnet_cifar.cpython-36.pyc
+│       │   ├── vanilla_resnet_imagenet.cpython-310.pyc
+│       │   ├── vanilla_resnet_imagenet.cpython-36.pyc
+│       │   ├── vanilla_vgg_cifar.cpython-310.pyc
+│       │   └── vanilla_vgg_cifar.cpython-36.pyc
+│       ├── vanilla_mobilenet_imagenet.py
+│       ├── vanilla_resnet_cifar.py
+│       ├── vanilla_resnet_imagenet.py
+│       └── vanilla_vgg_cifar.py
+├── num_classes:
+├── run_all_eval_cifar.sh
+├── run_all_train_cifar10.sh
+├── run_all_train_cifar100.sh
+├── run_all_train_imagenet.sh
+├── save
+│   ├── 2024-11-25
+│   │   ├── cifar100_densenet121_quan_BFA_defense_test
+│   │   │   ├── log_seed_3876.txt
+│   │   │   ├── log_seed_7837.txt
+│   │   │   ├── log_seed_9439.txt
+│   │   │   ├── output_summary_densenet121_quan_BFA_0.csv
+│   │   │   ├── output_summary_densenet121_quan_BFA_1.csv
+│   │   │   └── tb_log
+│   │   │       ├── run_3876
+│   │   │       │   └── events.out.tfevents.1732479548.ubuntu-MS-7B23
+│   │   │       ├── run_7837
+│   │   │       │   └── events.out.tfevents.1732479926.ubuntu-MS-7B23
+│   │   │       └── run_9439
+│   │   │           └── events.out.tfevents.1732479747.ubuntu-MS-7B23
+│   │   ├── cifar100_resnet20_quan_BFA_defense_test
+│   │   │   ├── log_seed_4243.txt
+│   │   │   └── tb_log
+│   │   │       └── run_4243
+│   │   │           └── events.out.tfevents.1732480479.ubuntu-MS-7B23
+│   │   ├── cifar100_squeezenet_quan_BFA_defense_test
+│   │   │   ├── attack_profile_5484.csv
+│   │   │   ├── log_seed_5484.txt
+│   │   │   ├── output_summary_squeezenet_quan_BFA_0.csv
+│   │   │   ├── output_summary_squeezenet_quan_BFA_1.csv
+│   │   │   ├── output_summary_squeezenet_quan_BFA_2.csv
+│   │   │   ├── output_summary_squeezenet_quan_BFA_3.csv
+│   │   │   ├── output_summary_squeezenet_quan_BFA_4.csv
+│   │   │   ├── output_summary_squeezenet_quan_BFA_5.csv
+│   │   │   └── tb_log
+│   │   │       └── run_5484
+│   │   │           └── events.out.tfevents.1732479500.ubuntu-MS-7B23
+│   │   ├── cifar10_resnet20_quan_BFA_defense_test
+│   │   │   ├── attack_profile_5303.csv
+│   │   │   ├── log_seed_5303.txt
+│   │   │   ├── output_summary_resnet20_quan_BFA_0.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_1.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_10.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_11.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_12.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_13.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_14.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_15.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_16.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_17.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_18.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_19.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_2.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_20.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_3.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_4.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_5.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_6.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_7.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_8.csv
+│   │   │   ├── output_summary_resnet20_quan_BFA_9.csv
+│   │   │   └── tb_log
+│   │   │       └── run_5303
+│   │   │           └── events.out.tfevents.1732480634.ubuntu-MS-7B23
+│   │   ├── cifar10_vgg11_quan_BFA_defense_test
+│   │   │   ├── attack_profile_3105.csv
+│   │   │   ├── log_seed_1189.txt
+│   │   │   ├── log_seed_3105.txt
+│   │   │   ├── output_summary_vgg11_quan_BFA_0.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_1.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_10.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_11.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_12.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_13.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_14.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_15.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_16.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_17.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_18.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_19.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_2.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_20.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_21.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_22.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_23.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_24.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_25.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_26.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_27.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_28.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_29.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_3.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_30.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_31.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_32.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_33.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_34.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_35.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_36.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_37.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_38.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_39.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_4.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_40.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_41.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_42.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_43.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_5.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_6.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_7.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_8.csv
+│   │   │   ├── output_summary_vgg11_quan_BFA_9.csv
+│   │   │   └── tb_log
+│   │   │       ├── run_1189
+│   │   │       │   └── events.out.tfevents.1732480687.ubuntu-MS-7B23
+│   │   │       └── run_3105
+│   │   │           └── events.out.tfevents.1732480735.ubuntu-MS-7B23
+│   │   ├── imagenet_densenet121_quan_BFA
+│   │   │   ├── log_seed_9020.txt
+│   │   │   ├── log_seed_9702.txt
+│   │   │   └── tb_log
+│   │   │       ├── run_9020
+│   │   │       │   └── events.out.tfevents.1732481095.ubuntu-MS-7B23
+│   │   │       └── run_9702
+│   │   │           └── events.out.tfevents.1732481002.ubuntu-MS-7B23
+│   │   ├── imagenet_mobilenet_v2_quan_BFA
+│   │   │   ├── attack_profile_2361.csv
+│   │   │   ├── log_seed_2361.txt
+│   │   │   ├── output_summary_mobilenet_v2_quan_BFA_0.csv
+│   │   │   ├── output_summary_mobilenet_v2_quan_BFA_1.csv
+│   │   │   ├── output_summary_mobilenet_v2_quan_BFA_2.csv
+│   │   │   └── tb_log
+│   │   │       └── run_2361
+│   │   │           └── events.out.tfevents.1732480013.ubuntu-MS-7B23
+│   │   ├── imagenet_resnet18_quan_BFA
+│   │   │   ├── attack_profile_8242.csv
+│   │   │   ├── log_seed_5461.txt
+│   │   │   ├── log_seed_8242.txt
+│   │   │   ├── output_summary_resnet18_quan_BFA_0.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_1.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_2.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_3.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_4.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_5.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_6.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_7.csv
+│   │   │   ├── output_summary_resnet18_quan_BFA_8.csv
+│   │   │   └── tb_log
+│   │   │       ├── run_5461
+│   │   │       │   └── events.out.tfevents.1732480299.ubuntu-MS-7B23
+│   │   │       └── run_8242
+│   │   │           └── events.out.tfevents.1732481248.ubuntu-MS-7B23
+│   │   └── imagenet_resnet20_quan_BFA
+│   │       ├── log_seed_7581.txt
+│   │       └── tb_log
+│   │           └── run_7581
+│   │               └── events.out.tfevents.1732480411.ubuntu-MS-7B23
+│   ├── 2025-06-11
+│   │   ├── cifar100_effnet_l2_160__binarized
+│   │   │   ├── log_seed_2625.txt
+│   │   │   ├── log_seed_3440.txt
+│   │   │   ├── log_seed_6899.txt
+│   │   │   └── tb_log
+│   │   │       ├── run_2625
+│   │   │       │   └── events.out.tfevents.1751626637.cpss-desktop.323091.0
+│   │   │       ├── run_3440
+│   │   │       │   └── events.out.tfevents.1751626719.cpss-desktop.323236.0
+│   │   │       └── run_6899
+│   │   │           └── events.out.tfevents.1751626542.cpss-desktop.322931.0
+│   │   ├── cifar100_swinmldecoder_quan_160__binarized
+│   │   │   ├── log_seed_1879.txt
+│   │   │   ├── log_seed_206.txt
+│   │   │   ├── log_seed_4687.txt
+│   │   │   ├── log_seed_4985.txt
+│   │   │   ├── log_seed_5397.txt
+│   │   │   ├── log_seed_6006.txt
+│   │   │   ├── log_seed_6149.txt
+│   │   │   ├── log_seed_6491.txt
+│   │   │   ├── log_seed_6641.txt
+│   │   │   ├── log_seed_7086.txt
+│   │   │   ├── log_seed_7394.txt
+│   │   │   ├── log_seed_7450.txt
+│   │   │   ├── log_seed_7990.txt
+│   │   │   ├── log_seed_8401.txt
+│   │   │   ├── log_seed_881.txt
+│   │   │   └── tb_log
+│   │   │       ├── run_1879
+│   │   │       │   └── events.out.tfevents.1751607948.cpss-desktop.293610.0
+│   │   │       ├── run_206
+│   │   │       │   └── events.out.tfevents.1751607873.cpss-desktop.293449.0
+│   │   │       ├── run_4687
+│   │   │       │   └── events.out.tfevents.1751623011.cpss-desktop.315405.0
+│   │   │       ├── run_4985
+│   │   │       │   └── events.out.tfevents.1751623030.cpss-desktop.315468.0
+│   │   │       ├── run_5397
+│   │   │       │   └── events.out.tfevents.1751607375.cpss-desktop.292594.0
+│   │   │       ├── run_6006
+│   │   │       │   └── events.out.tfevents.1751607412.cpss-desktop.292681.0
+│   │   │       ├── run_6149
+│   │   │       │   └── events.out.tfevents.1751607441.cpss-desktop.292788.0
+│   │   │       ├── run_6491
+│   │   │       │   └── events.out.tfevents.1751623207.cpss-desktop.315783.0
+│   │   │       ├── run_6641
+│   │   │       │   └── events.out.tfevents.1751623546.cpss-desktop.316394.0
+│   │   │       ├── run_7086
+│   │   │       │   └── events.out.tfevents.1751623841.cpss-desktop.316991.0
+│   │   │       ├── run_7394
+│   │   │       │   └── events.out.tfevents.1751623679.cpss-desktop.316694.0
+│   │   │       ├── run_7450
+│   │   │       │   └── events.out.tfevents.1751623667.cpss-desktop.316642.0
+│   │   │       ├── run_7990
+│   │   │       │   └── events.out.tfevents.1751622941.cpss-desktop.315247.0
+│   │   │       ├── run_8401
+│   │   │       │   └── events.out.tfevents.1751607425.cpss-desktop.292732.0
+│   │   │       └── run_881
+│   │   │           └── events.out.tfevents.1751623301.cpss-desktop.315992.0
+│   │   ├── cifar10_resnet20_bin_160_SGD_binarized
+│   │   │   ├── accuracy.txt
+│   │   │   ├── checkpoint.pth.tar
+│   │   │   ├── curve.png
+│   │   │   ├── log_seed_4470.txt
+│   │   │   ├── model_best.pth.tar
+│   │   │   └── tb_log
+│   │   │       └── run_4470
+│   │   │           └── events.out.tfevents.1749632700.cpss-desktop.433545.0
+│   │   ├── cifar10_resnet20_quan_160_SGD_binarized
+│   │   │   ├── BFA_defense_test
+│   │   │   │   ├── attack_profile_3788.csv
+│   │   │   │   ├── log_seed_3788.txt
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_0.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_1.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_10.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_11.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_12.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_13.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_14.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_15.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_16.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_17.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_18.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_19.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_2.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_20.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_21.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_22.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_23.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_24.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_25.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_26.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_27.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_28.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_29.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_3.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_30.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_31.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_32.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_33.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_34.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_35.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_36.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_37.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_4.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_5.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_6.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_7.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_8.csv
+│   │   │   │   ├── output_summary_resnet20_quan_BFA_9.csv
+│   │   │   │   └── tb_log
+│   │   │   │       └── run_3788
+│   │   │   │           └── events.out.tfevents.1749981765.cpss-desktop.343555.0
+│   │   │   ├── accuracy.txt
+│   │   │   ├── checkpoint.pth.tar
+│   │   │   ├── cifar10_resnet20_evaluation.zip
+│   │   │   ├── curve.png
+│   │   │   ├── log_seed_611.txt
+│   │   │   ├── model_best.pth.tar
+│   │   │   ├── new_exp
+│   │   │   │   ├── log_seed_1219.txt
+│   │   │   │   ├── log_seed_1564.txt
+│   │   │   │   ├── log_seed_7562.txt
+│   │   │   │   ├── log_seed_8198.txt
+│   │   │   │   ├── log_seed_9091.txt
+│   │   │   │   ├── tb_log
+│   │   │   │   │   ├── run_1219
+│   │   │   │   │   │   └── events.out.tfevents.1750066802.cpss-desktop.392943.0
+│   │   │   │   │   ├── run_1564
+│   │   │   │   │   │   └── events.out.tfevents.1750065566.cpss-desktop.392631.0
+│   │   │   │   │   ├── run_7562
+│   │   │   │   │   │   └── events.out.tfevents.1750066534.cpss-desktop.392790.0
+│   │   │   │   │   └── run_9091
+│   │   │   │   │       └── events.out.tfevents.1750066316.cpss-desktop.392720.0
+│   │   │   │   └── topk_before_after_seed1219.csv
+│   │   │   └── tb_log
+│   │   │       └── run_611
+│   │   │           └── events.out.tfevents.1749630122.cpss-desktop.415297.0
+│   │   ├── cifar10_vanilla_resnet20_160_SGD_binarized
+│   │   │   ├── accuracy.txt
+│   │   │   ├── checkpoint.pth.tar
+│   │   │   ├── curve.png
+│   │   │   ├── log_seed_7900.txt
+│   │   │   ├── model_best.pth.tar
+│   │   │   └── tb_log
+│   │   │       └── run_7900
+│   │   │           └── events.out.tfevents.1749628714.cpss-desktop.402411.0
+│   │   ├── cifar10_vgg11_bn_160_SGD_binarized
+│   │   │   ├── accuracy.txt
+│   │   │   ├── checkpoint.pth.tar
+│   │   │   ├── curve.png
+│   │   │   ├── log_seed_1821.txt
+│   │   │   ├── model_best.pth.tar
+│   │   │   └── tb_log
+│   │   │       └── run_1821
+│   │   │           └── events.out.tfevents.1749635687.cpss-desktop.453114.0
+│   │   └── cifar10_vgg11_bn_quan_160_SGD_binarized
+│   │       ├── accuracy.txt
+│   │       ├── checkpoint.pth.tar
+│   │       ├── curve.png
+│   │       ├── log_seed_8135.txt
+│   │       ├── model_best.pth.tar
+│   │       └── tb_log
+│   │           └── run_8135
+│   │               └── events.out.tfevents.1749637440.cpss-desktop.468046.0
+│   ├── 2025-06-12
+│   │   └── cifar10_vgg11_quan_160_SGD_binarized
+│   │       ├── accuracy.txt
+│   │       ├── checkpoint.pth.tar
+│   │       ├── curve.png
+│   │       ├── log_seed_4571.txt
+│   │       ├── model_best.pth.tar
+│   │       └── tb_log
+│   │           └── run_4571
+│   │               └── events.out.tfevents.1749731884.cpss-desktop.722165.0
+│   ├── 2025-07-03
+│   │   └── cifar10_wideresnet_quan_160__binarized
+│   │       ├── checkpoint.pth.tar
+│   │       ├── log_seed_2247.txt
+│   │       ├── log_seed_3193.txt
+│   │       ├── log_seed_4893.txt
+│   │       ├── log_seed_6124.txt
+│   │       ├── log_seed_7847.txt
+│   │       ├── model_best.pth.tar
+│   │       └── tb_log
+│   │           ├── run_2247
+│   │           │   └── events.out.tfevents.1751536849.cpss-desktop.182147.0
+│   │           ├── run_3193
+│   │           │   └── events.out.tfevents.1751536370.cpss-desktop.181991.0
+│   │           ├── run_4893
+│   │           │   └── events.out.tfevents.1751536859.cpss-desktop.182183.0
+│   │           ├── run_6124
+│   │           │   └── events.out.tfevents.1751537040.cpss-desktop.182483.0
+│   │           └── run_7847
+│   │               └── events.out.tfevents.1751536302.cpss-desktop.181946.0
+│   ├── log_seed_1231.txt
+│   ├── log_seed_1554.txt
+│   ├── log_seed_1664.txt
+│   ├── log_seed_2610.txt
+│   ├── log_seed_4777.txt
+│   ├── log_seed_6589.txt
+│   ├── log_seed_8068.txt
+│   ├── log_seed_8406.txt
+│   ├── log_seed_8448.txt
+│   └── tb_log
+│       ├── run_1554
+│       │   └── events.out.tfevents.1749541468.cpss-desktop.93610.0
+│       ├── run_1664
+│       │   └── events.out.tfevents.1749545588.cpss-desktop.131202.0
+│       ├── run_6589
+│       │   └── events.out.tfevents.1749545591.cpss-desktop.131232.0
+│       └── run_8406
+│           └── events.out.tfevents.1749541466.cpss-desktop.93582.0
+├── test_challenge.py
+├── train_CIFAR.sh
+├── train_CIFAR100.sh
+├── train_imagenet.sh
+├── utils.py
+└── visulization
+    ├── BFA_vs_random.ipynb
+    ├── BFA_vs_random.pdf
+    ├── __init__.py
+    ├── acc_bitflips.pdf
+    ├── acc_nbf
+    │   ├── resnet_20_acc_nq_lambda.pdf
+    │   ├── resnet_20_mean_nq_lambda.pdf
+    │   ├── resnet_20_std_nq_lambda.pdf
+    │   ├── vgg11_acc_nq_lambda.pdf
+    │   ├── vgg11_mean_nq_lambda.pdf
+    │   └── vgg11_std_nq_lambda.pdf
+    ├── ob1_2.ipynb
+    ├── ob_4.ipynb
+    ├── performace_eval.ipynb
+    ├── torchsummary.py
+    └── viz_attack_profile.ipynb
+
+126 directories, 458 files
