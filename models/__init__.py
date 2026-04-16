@@ -37,3 +37,4 @@ from .quan_wideresnet import wideresnet_quan
 #from .quan_swinmldecoder import swinmldecoder_quan
 from .effnet_l2 import effnet_l2
 from .quan_vit import vit_quan, vit
+from .quan_wyze import wyze_resnet20_quan
