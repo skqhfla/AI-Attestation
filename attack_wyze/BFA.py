@@ -13,19 +13,28 @@ class BFA(object):
         self.n_bits2flip = 0
         self.loss = 0
         
-        # Identify all target layers (nn.Conv2d and nn.Linear)
+        # Identify target layers for classification bit-flip
+        # We target specific layers (DetectHead) for surgical precision.
         self.module_list = []
         for name, m in model.named_modules():
-            if isinstance(m, (nn.Conv2d, nn.Linear)):
-                self.module_list.append(name)
-                # Ensure the layer has the necessary BFA attributes (8-bit quantization)
-                if not hasattr(m, 'N_bits'):
-                    m.N_bits = 8
+            # In Wyze YOLO, classification happens in DetectHead's internal conv
+            # Only include modules that are children of a DetectHead or identified as such
+            if isinstance(m, nn.Conv2d) and ("layer_modules" in name):
+                # We specifically check if this Conv2d is the one inside DetectHead
+                # In WyzeClassifySTE, DetectHead.conv is where weights live.
+                parent_name = '.'.join(name.split('.')[:-1])
+                parent_module = dict(model.named_modules()).get(parent_name)
+                
+                # Check if it's a DetectHead (based on channel size 30 for Wyze)
+                if m.weight.shape[0] == 30:
+                    self.module_list.append(name)
+                    print(f"[BFA Init] Targeted classification layer: {name}")
+
+                # Ensure basic BFA attributes
+                if not hasattr(m, 'N_bits'): m.N_bits = 8
                 if not hasattr(m, 'b_w'):
-                    # bit-wise basis tensor. MSB is negative for 2's complement.
                     b_w = 2**torch.arange(start=m.N_bits - 1, end=-1, step=-1).unsqueeze(-1).float()
                     b_w[0] = -b_w[0]
-                    # Ensure b_w is registered on the same device as the weights
                     m.register_buffer('b_w', b_w.to(m.weight.device))
 
     def flip_bit(self, m):
@@ -34,12 +43,22 @@ class BFA(object):
         else:
             k_top = min(self.k_top, m.weight.numel())
 
-        # 1. Gradient ranking
+        # 1. Gradient ranking with Precision Masking
         if m.weight.grad is None:
              raise ValueError("Weight grad is None. Make sure you called loss.backward()")
         
-        w_grad_topk, w_idx_topk = m.weight.grad.detach().abs().view(-1).topk(k_top)
-        w_grad_topk = m.weight.grad.detach().view(-1)[w_idx_topk]
+        grad = m.weight.grad.detach()
+        
+        # Precision Mask: Only target classification channels
+        # Anchor 1: 5-9, Anchor 2: 15-19, Anchor 3: 25-29
+        cls_channels = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+        mask = torch.zeros_like(grad)
+        mask[cls_channels, ...] = 1.0 # Enable gradients for cls channels only
+        
+        masked_grad = grad * mask
+        
+        w_grad_topk, w_idx_topk = masked_grad.abs().view(-1).topk(k_top)
+        w_grad_topk = masked_grad.view(-1)[w_idx_topk]
 
         # 2. Bit gradient
         # b_w is [N_bits, 1]
