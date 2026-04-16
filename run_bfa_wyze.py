@@ -24,31 +24,35 @@ def sigmoid(x):
 
 def calculate_accuracy(model, data_loader, device):
     """
-    YOLO 인식을 '정확도'로 환산하는 간단한 함수.
-    탐지된 객체가 하나라도 있는 이미지의 비율을 측정합니다.
-    공격이 성공하면 객체 탐지율이 급격히 떨어집니다.
+    YOLO 인식을 '정확도'로 환산하는 함수.
+    1. 성공률: 객체를 하나라도 탐지한 이미지 비율
+    2. 평균 신뢰도: 탐지된 객체들의 평균 Confidence
     """
     model.eval()
     detected_count = 0
     total_count = 0
+    all_confs = []
     
     with torch.no_grad():
         for inputs in data_loader:
             inputs = inputs.to(device)
             d32, d16 = model(inputs)
             
-            # 배치가 1이라고 가정 (단순화)
+            frame_detected = False
             for head in [d32, d16]:
-                # head shape: [30, H, W]
-                # 30개 채널 중 obj_score는 4, 14, 24번 채널 (앵커 0, 1, 2)
+                # obj_score 채널: 4, 14, 24
                 obj_scores = torch.stack([sigmoid(head[4]), sigmoid(head[14]), sigmoid(head[24])])
                 if (obj_scores > CONF_THRESHOLD).any():
-                    detected_count += 1
-                    break # 이 프레임은 이미 탐지됨
+                    frame_detected = True
+                    all_confs.append(obj_scores[obj_scores > CONF_THRESHOLD].mean().item())
             
+            if frame_detected:
+                detected_count += 1
             total_count += 1
             
-    return (detected_count / total_count) * 100
+    success_rate = (detected_count / total_count) * 100
+    avg_conf = np.mean(all_confs) if all_confs else 0.0
+    return success_rate, avg_conf
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,12 +63,12 @@ def main():
     model = wyze_resnet20_quan().to(device)
     model.eval()
 
-    # 2. 데이터 준비 (여러 가능성 있는 경로 탐색)
+    # 2. 데이터 준비
     possible_paths = [
-        Path("../dumps_raw"),           # 로컬 환경
-        Path("./dumps_raw"),            # 실행 위치와 동일한 경우
-        Path("../../dumps_raw"),        # 상위 폴더 내 다른 위치
-        Path("./sample_data")           # 깃허브 업로드용 폴더
+        Path("../dumps_raw"),
+        Path("./dumps_raw"),
+        Path("../../dumps_raw"),
+        Path("./sample_data")
     ]
     
     frames_dir = None
@@ -74,8 +78,7 @@ def main():
             break
             
     if frames_dir is None:
-        print("\n[ERROR] No sample images (frame_*_input.bin) found!")
-        print(f"Please copy 'dumps_raw' folder to one of: {[str(p) for p in possible_paths]}")
+        print("\n[ERROR] No sample images found!")
         sys.exit(1)
 
     print(f"Loading samples from: {frames_dir}")
@@ -86,49 +89,45 @@ def main():
         data = np.fromfile(f, dtype=np.int8).reshape(256, 448, 3).transpose(2, 0, 1)
         sample_images.append(torch.from_numpy(data.astype(np.float32)))
     
-    # 공격용 1장 + 검증용 나머지
     attack_data = sample_images[0].unsqueeze(0).to(device)
     val_loader = [img.unsqueeze(0) for img in sample_images]
 
-    # 공격용 타겟 레이블 (현재 출력을 타겟으로 설정하여 'Crushing' 유도)
     with torch.no_grad():
         d32, d16 = model(attack_data)
         attack_target = (d32.detach().clone(), d16.detach().clone())
 
-    # 3. 손실 함수 정의 (Objectness 점수 자체를 낮추도록 설계)
+    # 3. 손실 함수 (Objectness를 높이는 방향으로 그라디언트를 구하고, 비트 플립으로 이를 파괴)
     def yolo_crushing_loss(outputs, targets):
         d32, d16 = outputs
-        # 앵커별 objectness 채널 (4, 14, 24) 합계
+        # Objectness 점수의 합을 최대로 하는 방향 (BFA는 이를 역으로 이용해 파괴)
         loss = d32[4].sum() + d32[14].sum() + d32[24].sum() + \
                d16[4].sum() + d16[14].sum() + d16[24].sum()
         return loss
 
     # 4. BFA 엔진 초기화
-    # k_top=10 설정 (범위 내 상위 10개 그라디언트 비트 검색)
     attacker = BFA(yolo_crushing_loss, model, k_top=10)
 
+    print("\n" + "="*40)
+    print("Pre-Attack Evaluation")
+    acc, conf = calculate_accuracy(model, val_loader, device)
+    print(f"Initial Detection Rate: {acc:.2f}%")
+    print(f"Initial Avg Confidence: {conf:.4f}")
+    print("="*40)
+
     print("\nStarting Bit-Flip Attack...")
-    print(f"Target Criteria: Min 10 flips AND Accuracy < 10.0%")
     
     start_time = time.time()
     bit_flips = 0
-    accuracy = calculate_accuracy(model, val_loader, device)
-    print(f"Initial Detection Rate: {accuracy:.2f}%")
-
     attack_profile = []
     iteration = 0
 
-    # 공격 루프: 비트 10개 이상 AND 정확도 10% 이하 달성 시 종료
-    while not (bit_flips >= 10 and accuracy <= 10.0) and iteration < 100:
+    while not (bit_flips >= 10 and acc <= 10.0) and iteration < 100:
         iteration += 1
         print(f"\n--- Iteration {iteration} ---")
         
-        # PBS 수행 (가장 영향력 있는 비트 1개 반전)
+        # PBS 수행
         log = attacker.progressive_bit_search(model, attack_data, attack_target)
         bit_flips = attacker.bit_counter
-        
-        # 정확도(탐지율) 재측정
-        accuracy = calculate_accuracy(model, val_loader, device)
         
         print(f"Bit Flips (Cumulative): {bit_flips}")
         print(f"Current Detection Rate: {accuracy:.2f}%")
