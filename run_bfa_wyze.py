@@ -25,8 +25,8 @@ parser = argparse.ArgumentParser(description="BFA Attack on Wyze YOLO (Unified F
 
 # main.py 호환 인자
 parser.add_argument("--save_path", type=str, default="./results/wyze")
-parser.add_argument("--n_iter", type=int, default=20, help="Number of iterations for BFA")
-parser.add_argument("--k_top", type=int, default=10, help="Number of bit candidates to search")
+parser.add_argument('--n_iter', type=int, default=100, help='number of bit flips')
+parser.add_argument('--k_top', type=int, default=50, help='candidate bits for each layer')
 parser.add_argument("--manualSeed", type=int, default=None)
 parser.add_argument("--gpu_id", type=int, default=0)
 parser.add_argument("--ngpu", type=int, default=1)
@@ -207,7 +207,7 @@ def main():
         image_tensor = torch.from_numpy(data.astype(np.float32)).unsqueeze(0)
         sample_images.append(image_tensor)
     
-    # 3. 손실 함수 (Targeted Class Crushing Loss)
+    # 3. 손실 함수 (Focused Squared Class Crushing Loss)
     def yolo_crushing_loss(outputs, targets):
         d32, d16 = outputs
         # 각 앵커의 클래스 채널(5~9, 15~19, 25~29)을 모두 합산
@@ -216,8 +216,10 @@ def main():
         for head in [d32, d16]:
             # 시그모이드를 적용하여 실제 확률값으로 변환
             probs = sigmoid(head[class_channels])
-            # 확률이 0.1 이상인 지점들만 집중 타격 (배경 노이즈 무시)
-            loss_val += probs[probs > 0.1].sum()
+            # 확률이 0.25 이상인 탐지만 골라 '제곱'하여 합산 (높은 확률 우선 타격)
+            target_probs = probs[probs > 0.25]
+            if target_probs.numel() > 0:
+                loss_val += (target_probs ** 2).sum()
         return -loss_val # 확률 합계를 최소화하도록 (음수화)
 
     # 4. 공격 수행
