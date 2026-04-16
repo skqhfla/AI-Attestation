@@ -42,38 +42,53 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, step_size=0.02):
-    """PGD를 사용하여 모든 클래스 확률(Sigmoid)이 균등하게 0.2가 되도록 이미지 최적화"""
-    # 각 클래스가 독립적으로 0.2(20%)의 확률을 갖도록 목표 설정
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, step_size=0.02, top_k=50):
+    """PGD를 사용하여 탐지된 주요 객체(Top-K cells)의 클래스 확률이 균등하게 0.2가 되도록 최적화"""
     target_prob = 0.2
-    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+    obj_idx = [4, 14, 24] # Objectness 채널
+    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29] # Class 채널
     
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        # 각 헤드에서 클래스 확률(Sigmoid) 추출 후 평균화
-        all_probs = []
+        all_obj_scores = []
+        all_class_probs = []
+        
         for head in [d32, d16]:
-            # head shape: [30, H, W] -> [15, H, W] -> [3_anchors, 5_classes, H, W]
-            p = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
-            avg_p = p.mean(dim=(0, 2, 3)) # 앵커와 그리드 전체에 대해 평균 확률 [5]
-            all_probs.append(avg_p)
+            # Objectness 추출 [3, H, W]
+            obj = sigmoid(head[obj_idx])
+            all_obj_scores.append(obj.view(-1))
+            
+            # Class Probabilities 추출 [3, 5, H, W]
+            cls = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
+            all_class_probs.append(cls.permute(0, 2, 3, 1).reshape(-1, 5)) # [3*H*W, 5]
+            
+        objs = torch.cat(all_obj_scores)
+        probs = torch.cat(all_class_probs)
         
-        # 전체 5개 클래스에 대한 평균 확률 분포
-        final_avg_probs = torch.stack(all_probs).mean(dim=0)
+        # 1. Objectness가 높은 상위 K개 셀(객체) 선정
+        top_scores, top_indices = torch.topk(objs, top_k)
+        target_probs = probs[top_indices] # [K, 5]
         
-        # L2 Loss: 각 클래스 확률이 0.2에서 벗어난 정도의 제곱합을 최소화
-        loss = ((final_avg_probs - target_prob) ** 2).sum()
+        # 2. 객체 단위 L2 Loss: 선택된 각 객체 내부의 클래스 균형 최적화
+        # 각 셀(K) 마다 5개 클래스가 0.2에 도달하도록 유도
+        loss_uniform = ((target_probs - target_prob) ** 2).mean()
+        
+        # 3. 보조 Loss: Objectness를 적정 수준(0.5)으로 유지하여 그라디언트 활성화
+        # 물체가 아예 없으면 클래스 최적화가 무의미하므로 0.5 정도로 유도
+        loss_obj = ((top_scores - 0.5) ** 2).mean()
+        
+        loss = loss_uniform + 0.1 * loss_obj
         
         if (i+1) % 100 == 0:
-            prob_status = ", ".join([f"{p.item()*100:.1f}%" for p in final_avg_probs])
-            print(f"  [Optimization] Iter {i+1}/{max_iters}, Loss: {loss.item():.6f} | Probs: [{prob_status}]")
+            avg_top_probs = target_probs.mean(dim=0)
+            status = ", ".join([f"{p.item()*100:.1f}%" for p in avg_top_probs])
+            print(f"  [Iter {i+1:03d}] Loss: {loss.item():.6f} | Obj: {top_scores.mean().item():.3f} | Top-K Probs: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
-        # 이미지 업데이트 (경사 하강 방향)
         with torch.no_grad():
             images -= step_size * images.grad.sign()
             images = torch.clamp(images, 0, 1)
