@@ -148,7 +148,7 @@ def main():
     # 5. 결과 저장
     df = pd.DataFrame(attack_profile, columns=[
         'module_idx', 'bit_flip_idx', 'module_name', 'weight_idx', 
-        'prior_val', 'post_val', 'current_acc'
+        'prior_val', 'post_val', 'current_acc', 'avg_conf'
     ])
     os.makedirs("./results", exist_ok=True)
     csv_path = "./results/wyze_bfa_profile.csv"
