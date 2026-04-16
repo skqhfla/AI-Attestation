@@ -96,12 +96,12 @@ def main():
         d32, d16 = model(attack_data)
         attack_target = (d32.detach().clone(), d16.detach().clone())
 
-    # 3. 손실 함수 (Objectness를 높이는 방향으로 그라디언트를 구하고, 비트 플립으로 이를 파괴)
+    # 3. 손실 함수 (신뢰도를 최소화하도록 마이너스 부호 적용)
     def yolo_crushing_loss(outputs, targets):
         d32, d16 = outputs
-        # Objectness 점수의 합을 최대로 하는 방향 (BFA는 이를 역으로 이용해 파괴)
-        loss = d32[4].sum() + d32[14].sum() + d32[24].sum() + \
-               d16[4].sum() + d16[14].sum() + d16[24].sum()
+        # Objectness 점수의 합에 마이너스를 붙여, 신뢰도가 낮아질수록 Loss가 커지게 설정 (BFA는 Loss 최대화 비트를 찾음)
+        loss = -(d32[4].sum() + d32[14].sum() + d32[24].sum() + \
+                 d16[4].sum() + d16[14].sum() + d16[24].sum())
         return loss
 
     # 4. BFA 엔진 초기화
@@ -127,19 +127,21 @@ def main():
         
         # PBS 수행
         log = attacker.progressive_bit_search(model, attack_data, attack_target)
-        bit_flips = attacker.bit_counter
+        # 성능 측정
+        acc, conf = calculate_accuracy(model, val_loader, device)
         
+        print(f"Loss (Ascending): {attacker.loss_max:.4f}")
         print(f"Bit Flips (Cumulative): {bit_flips}")
-        print(f"Current Detection Rate: {accuracy:.2f}%")
+        print(f"Detection Rate: {acc:.2f}% | Avg Conf: {conf:.4f}")
         
         for entry in log:
-            attack_profile.append(entry + [accuracy])
+            attack_profile.append(entry + [acc, conf])
 
     end_time = time.time()
     print("\n" + "="*40)
     print("Attack Finished!")
     print(f"Total Bit Flips: {bit_flips}")
-    print(f"Final Detection Rate: {accuracy:.2f}%")
+    print(f"Final Detection Rate: {acc:.2f}%")
     print(f"Total Time: {end_time - start_time:.2f} seconds")
     print("="*40)
 
