@@ -125,6 +125,12 @@ def perform_attack(attacker, model, train_loader, val_loader, N_iter, log, save_
 
     last_acc = initial_acc
     all_attack_logs = []
+    
+    # 가중치 저장을 위한 하위 폴더 생성
+    weight_save_dir = os.path.join(args.save_path, "weights")
+    os.makedirs(weight_save_dir, exist_ok=True)
+    
+    last_saved_bits = 0
 
     # 3. 공격 루프
     for i_iter in range(N_iter):
@@ -135,6 +141,22 @@ def perform_attack(attacker, model, train_loader, val_loader, N_iter, log, save_
         step_log = attacker.progressive_bit_search(model, attack_data, attack_target)
         
         attack_time.update(time.time() - start_attack)
+        
+        # 4. 성능 재측정
+        current_acc, current_conf, _, _ = validate(val_loader, model, attacker.criterion, None, device)
+        
+        # 5. 체크포인트 저장 (10비트 단위)
+        current_bits = attacker.bit_counter
+        if current_bits // 10 > last_saved_bits // 10:
+            checkpoint_bits = (current_bits // 10) * 10
+            save_name = f"wyze_bfa_bit{checkpoint_bits}_conf{current_conf:.4f}.pth"
+            save_path_ckpt = os.path.join(weight_save_dir, save_name)
+            torch.save(model.state_dict(), save_path_ckpt)
+            print_log(f"\n[Checkpoint] Saved model at {current_bits} bits (Threshold: {checkpoint_bits}). Avg Conf: {current_conf:.4f}", log)
+            last_saved_bits = current_bits
+        
+        acc_drop = last_acc - current_acc
+        last_acc = current_acc
         
         print_log(
             f"Iteration: [{i_iter+1:03d}/{N_iter:03d}] "
