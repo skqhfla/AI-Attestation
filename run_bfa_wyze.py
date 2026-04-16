@@ -207,15 +207,18 @@ def main():
         image_tensor = torch.from_numpy(data.astype(np.float32)).unsqueeze(0)
         sample_images.append(image_tensor)
     
-    # 3. 손실 함수 (Class Crushing Loss)
+    # 3. 손실 함수 (Targeted Class Crushing Loss)
     def yolo_crushing_loss(outputs, targets):
         d32, d16 = outputs
         # 각 앵커의 클래스 채널(5~9, 15~19, 25~29)을 모두 합산
         class_channels = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
         loss_val = 0
-        for c in class_channels:
-            loss_val += d32[c].sum() + d16[c].sum()
-        return -loss_val # 합계를 최소화하도록 (음수화)
+        for head in [d32, d16]:
+            # 시그모이드를 적용하여 실제 확률값으로 변환
+            probs = sigmoid(head[class_channels])
+            # 확률이 0.1 이상인 지점들만 집중 타격 (배경 노이즈 무시)
+            loss_val += probs[probs > 0.1].sum()
+        return -loss_val # 확률 합계를 최소화하도록 (음수화)
 
     # 4. 공격 수행
     attacker = BFA(yolo_crushing_loss, model, args.k_top)
