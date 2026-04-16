@@ -25,6 +25,23 @@ CONF_THRESHOLD = 0.25
 def sigmoid(x):
     return 1.0 / (1.0 + torch.exp(-torch.clamp(x, -50, 50)))
 
+def generate_random_image(batch_size=1, channels=3, height=IMAGE_SIZE[0], width=IMAGE_SIZE[1]):
+    """랜덤 노이즈 이미지 생성"""
+    if np.random.rand() > 0.5:
+        # Uniform Noise
+        return torch.rand((batch_size, channels, height, width), device=DEVICE)
+    else:
+        # Gaussian Noise
+        base_image = torch.rand((batch_size, channels, height, width), device=DEVICE)
+        gaussian_noise = torch.randn((batch_size, channels, height, width), device=DEVICE) * 0.2
+        return torch.clamp(base_image + gaussian_noise, min=0, max=1)
+
+def save_image(tensor, filename):
+    """텐서를 PNG 파일로 저장"""
+    tensor = tensor.squeeze(0).detach().cpu()
+    image = transforms.ToPILImage()(tensor)
+    image.save(filename)
+
 def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=200, step_size=0.01):
     """PGD를 사용하여 모델의 클래스 출력이 균등 분포(1/N)가 되도록 이미지 최적화"""
     target_dist = torch.full((1, num_classes), 1.0 / num_classes).to(DEVICE)
