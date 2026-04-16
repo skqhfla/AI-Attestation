@@ -54,8 +54,9 @@ log = open(os.path.join(args.save_path, f"log_wyze_seed_{args.manualSeed}.txt"),
 
 def print_log(msg, log):
     print(msg)
-    log.write(f"{msg}\n")
-    log.flush()
+    if log is not None:
+        log.write(f"{msg}\n")
+        log.flush()
 
 def sigmoid(x):
     return 1.0 / (1.0 + torch.exp(-torch.clamp(x, -50, 50)))
@@ -142,8 +143,8 @@ def perform_attack(attacker, model, train_loader, val_loader, N_iter, log, save_
         
         attack_time.update(time.time() - start_attack)
         
-        # 4. 성능 재측정
-        current_acc, current_conf, _, _ = validate(val_loader, model, attacker.criterion, None, device)
+        # 4. 성능 재측정 (log 객체 전달)
+        current_acc, current_conf, _, _ = validate(val_loader, model, attacker.criterion, log, device)
         
         # 5. 체크포인트 저장 (10비트 단위)
         current_bits = attacker.bit_counter
