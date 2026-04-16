@@ -78,11 +78,14 @@ def calculate_accuracy(model, data_loader, device):
             
             frame_detected = False
             for head in [d32, d16]:
-                # obj_score 채널: 4, 14, 24
-                obj_scores = torch.stack([sigmoid(head[4]), sigmoid(head[14]), sigmoid(head[24])])
-                if (obj_scores > CONF_THRESHOLD).any():
+                # 각 앵커별 클래스 채널 (5-9, 15-19, 25-29)
+                class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+                class_probs = torch.stack([sigmoid(head[c]) for c in class_idx])
+                
+                if (class_probs > CONF_THRESHOLD).any():
                     frame_detected = True
-                    all_confs.append(obj_scores[obj_scores > CONF_THRESHOLD].mean().item())
+                    # 기준치 이상의 클래스 확신도 평균 기록
+                    all_confs.append(class_probs[class_probs > CONF_THRESHOLD].mean().item())
             
             if frame_detected:
                 detected_count += 1
@@ -204,12 +207,15 @@ def main():
         image_tensor = torch.from_numpy(data.astype(np.float32)).unsqueeze(0)
         sample_images.append(image_tensor)
     
-    # 3. 손실 함수 (crushing_loss)
+    # 3. 손실 함수 (Class Crushing Loss)
     def yolo_crushing_loss(outputs, targets):
         d32, d16 = outputs
-        loss = -(d32[4].sum() + d32[14].sum() + d32[24].sum() + \
-                 d16[4].sum() + d16[14].sum() + d16[24].sum())
-        return loss
+        # 각 앵커의 클래스 채널(5~9, 15~19, 25~29)을 모두 합산
+        class_channels = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+        loss_val = 0
+        for c in class_channels:
+            loss_val += d32[c].sum() + d16[c].sum()
+        return -loss_val # 합계를 최소화하도록 (음수화)
 
     # 4. 공격 수행
     attacker = BFA(yolo_crushing_loss, model, args.k_top)

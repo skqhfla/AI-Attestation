@@ -72,16 +72,19 @@ def load_and_predict_wyze(model, save_dir):
             detected = False
             
             for head in [d32, d16]:
-                # obj_score 채널: 4, 14, 24
-                # head shape: [30, H, W]
-                obj_scores = torch.stack([sigmoid(head[4]), sigmoid(head[14]), sigmoid(head[24])])
-                all_obj_scores.append(obj_scores.mean().item())
-                if obj_scores.max().item() > max_conf:
-                    max_conf = obj_scores.max().item()
-                if (obj_scores > CONF_THRESHOLD).any():
+                # 클래스 채널 인덱스
+                class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+                class_scores = torch.stack([sigmoid(head[c]) for c in class_idx])
+                
+                # 해당 이미지에서 가장 높게 예측된 클래스 확률 추적
+                if class_scores.max().item() > max_conf:
+                    max_conf = class_scores.max().item()
+                
+                # 기준치 이상의 클래스 확신이 있는지 확인
+                if (class_scores > CONF_THRESHOLD).any():
                     detected = True
             
-            print(f"[{i+1:03d}] {os.path.basename(img_path)}: Max Conf: {max_conf:.4f} | Detected: {detected}")
+            print(f"[{i+1:03d}] {os.path.basename(img_path)}: Max Class Conf: {max_conf:.4f} | Classifiable: {detected}")
 
 def main():
     print(f"Using device: {DEVICE}")
