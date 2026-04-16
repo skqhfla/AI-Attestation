@@ -128,7 +128,11 @@ class BFA(object):
 
                 module.weight.data = attack_weight
 
+        # Cumulative bit counter update
         self.bit_counter += self.n_bits2flip
+        
+        # Log n_bits2flip for this iteration to attack_log or elsewhere if needed
+        # but reset for next call to progressive_bit_search
         self.n_bits2flip = 0
 
         return attack_log
