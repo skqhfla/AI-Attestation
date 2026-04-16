@@ -59,10 +59,27 @@ def main():
     model = wyze_resnet20_quan().to(device)
     model.eval()
 
-    # 2. 데이터 준비 (dumps_raw 폴더의 프레임 사용)
-    # 640x360 RGB 바이너리를 읽어 전처리 (단순화된 버전)
-    frames_dir = Path("../dumps_raw")
-    input_files = sorted(list(frames_dir.glob("frame_*_input.bin")))[:20] # 상위 20프레임 사용
+    # 2. 데이터 준비 (여러 가능성 있는 경로 탐색)
+    possible_paths = [
+        Path("../dumps_raw"),           # 로컬 환경
+        Path("./dumps_raw"),            # 실행 위치와 동일한 경우
+        Path("../../dumps_raw"),        # 상위 폴더 내 다른 위치
+        Path("./sample_data")           # 깃허브 업로드용 폴더
+    ]
+    
+    frames_dir = None
+    for p in possible_paths:
+        if p.exists() and list(p.glob("frame_*_input.bin")):
+            frames_dir = p
+            break
+            
+    if frames_dir is None:
+        print("\n[ERROR] No sample images (frame_*_input.bin) found!")
+        print(f"Please copy 'dumps_raw' folder to one of: {[str(p) for p in possible_paths]}")
+        sys.exit(1)
+
+    print(f"Loading samples from: {frames_dir}")
+    input_files = sorted(list(frames_dir.glob("frame_*_input.bin")))[:20]
     
     sample_images = []
     for f in input_files:
