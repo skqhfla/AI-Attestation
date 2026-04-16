@@ -78,12 +78,16 @@ class BFA(object):
 
         # 4. Global search for max bit gradient
         grad_max = b_grad_topk.abs().max()
+        
+        if grad_max.item() == 0:
+            # No effective bit to flip in this module
+            return m.weight.data
+            
         _, b_grad_max_idx = b_grad_topk.abs().view(-1).topk(self.n_bits2flip)
         bit2flip = b_grad_topk.clone().view(-1).zero_()
 
-        if grad_max.item() != 0:
-            bit2flip[b_grad_max_idx] = 1
-            bit2flip = bit2flip.view(b_grad_topk.size())
+        bit2flip[b_grad_max_idx] = 1
+        bit2flip = bit2flip.view(b_grad_topk.size())
         
         # 5. Flip bits
         w_bin_topk_flipped = (bit2flip.to(torch.int16) * m.b_w.abs().to(torch.int16)).sum(0, dtype=torch.int16) ^ w_bin_topk
