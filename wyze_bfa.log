@@ -1,0 +1,198 @@
+Using device: cuda
+Loading Wyze YOLO model...
+Loading samples from: dumps_raw
+
+========================================
+Pre-Attack Evaluation
+Initial Detection Rate: 100.00%
+Initial Avg Confidence: 0.5047
+========================================
+
+Starting Bit-Flip Attack...
+
+--- Iteration 1 ---
+Loss (Ascending): 19544.8867
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.5032
+
+--- Iteration 2 ---
+Loss (Ascending): 21878.0684
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4894
+
+--- Iteration 3 ---
+Loss (Ascending): 23669.6816
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 4 ---
+Loss (Ascending): 26481.4160
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 5 ---
+Loss (Ascending): 27888.0703
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 6 ---
+Loss (Ascending): 29293.9355
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 7 ---
+Loss (Ascending): 30699.4121
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 8 ---
+Loss (Ascending): 32104.8887
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 9 ---
+Loss (Ascending): 33509.5781
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 10 ---
+Loss (Ascending): 34913.8750
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 11 ---
+Loss (Ascending): 36317.3906
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 12 ---
+Loss (Ascending): 37720.8984
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 13 ---
+Loss (Ascending): 39124.4141
+Bit Flips (Cumulative): 0
+Detection Rate: 100.00% | Avg Conf: 0.4984
+
+--- Iteration 14 ---
+Loss (Ascending): 40224.8477
+Bit Flips (Cumulative): 0
+Detection Rate: 10.00% | Avg Conf: 0.4269
+
+--- Iteration 15 ---
+Loss (Ascending): 41629.1445
+Bit Flips (Cumulative): 0
+Detection Rate: 10.00% | Avg Conf: 0.4269
+
+--- Iteration 16 ---
+Loss (Ascending): 43033.4453
+Bit Flips (Cumulative): 0
+Detection Rate: 10.00% | Avg Conf: 0.4269
+
+--- Iteration 17 ---
+Loss (Ascending): 44434.6016
+Bit Flips (Cumulative): 0
+Detection Rate: 10.00% | Avg Conf: 0.4269
+
+--- Iteration 18 ---
+Loss (Ascending): 45408.7344
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 19 ---
+Loss (Ascending): 46815.3867
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 20 ---
+Loss (Ascending): 48222.0391
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 21 ---
+Loss (Ascending): 49628.6914
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 22 ---
+Loss (Ascending): 50479.3906
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 23 ---
+Loss (Ascending): 51668.0000
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 24 ---
+Loss (Ascending): 52371.3242
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 25 ---
+Loss (Ascending): 53074.6523
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 26 ---
+Loss (Ascending): 53777.9805
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 27 ---
+Loss (Ascending): 54481.3047
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 28 ---
+Loss (Ascending): 55184.6289
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 29 ---
+Loss (Ascending): 55887.9570
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 30 ---
+Loss (Ascending): 56591.2852
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 31 ---
+Loss (Ascending): 57294.6094
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 32 ---
+Loss (Ascending): 57997.9336
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 33 ---
+Loss (Ascending): 58701.2617
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 34 ---
+Loss (Ascending): 59245.8945
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 35 ---
+Loss (Ascending): 62059.1992
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 36 ---
+Loss (Ascending): 63465.8516
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 37 ---
+Loss (Ascending): 64270.6484
+Bit Flips (Cumulative): 0
+Detection Rate: 0.00% | Avg Conf: 0.0000
+
+--- Iteration 38 ---
