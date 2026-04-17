@@ -42,67 +42,80 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.01):
-    """로짓 기반 타겟 락킹을 통해 탐지는 보장(Obj > 0.9)하고 클래스는 20% 균등화하도록 최적화"""
-    #目标: Sigmoid(4.5) ≈ 0.99 (Objectness), Sigmoid(-1.386) ≈ 0.2 (Class)
-    target_obj_logit = 4.5
-    target_cls_logit = -1.386
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.03):
+    """논문(main.tex)의 PGD 방법론(KL, L2, Var Loss)을 엄격히 적용하여 챌린지 최적화"""
+    # 타겟 분포 T (균등 분포 20%)
+    T = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
-    target_idx = None # 최적화할 특정 셀(Grid)을 첫 루프에서 고정
+    target_idx = None # 최적화할 특정 객체 지점 고정
     
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        all_obj_logits = []
-        all_class_logits = []
+        all_objs = []
+        all_probs = []
         
+        # YOLO 헤드에서 Objectness와 Class Probabilities(Sigmoid) 추출
         for head in [d32, d16]:
-            all_obj_logits.append(head[obj_idx].reshape(-1))
-            cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
-            all_class_logits.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
+            all_objs.append(sigmoid(head[obj_idx]).reshape(-1))
+            cls = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
+            all_probs.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
             
-        objs_logit = torch.cat(all_obj_logits)
-        probs_logit = torch.cat(all_class_logits)
+        objs = torch.cat(all_objs)
+        probs = torch.cat(all_probs)
         
-        # 1. 첫 루프에서 가장 가능성 높은 타겟 셀 고정 (Target Locking)
+        # 1. 첫 루프에서 타겟 셀 선정 및 고정 (Target Locking)
         if target_idx is None:
-            _, target_idx = torch.max(objs_logit, 0)
+            _, target_idx = torch.max(objs, 0)
             target_idx = target_idx.item()
-            print(f"  [Target Locking] Index: {target_idx}")
+            print(f"  [Method: PGD Paper Sync] Locking Target Index: {target_idx}")
 
-        # 2. 손실 함수 설계 (로짓 영역에서 직접 타겟팅)
-        # (A) 타겟 셀의 Objectness를 4.5(약 99%)로 유도
-        loss_obj = (objs_logit[target_idx] - target_obj_logit) ** 2
-        # (B) 타겟 셀의 5개 클래스 로짓을 -1.386(약 20%)으로 유도
-        loss_cls = ((probs_logit[target_idx] - target_cls_logit) ** 2).sum()
-        # (C) 배경 억제: 나머지 구역의 Objectness 로짓을 -10.0(거의 0)으로 강제
-        # 슬라이싱을 이용해 타겟 외의 모든 로짓 선택
-        bg_logits = torch.cat([objs_logit[:target_idx], objs_logit[target_idx+1:]])
-        loss_bg = ((bg_logits + 10.0) ** 2).mean() # -10.0 근처로 유도
+        # 2. 논문 기반 복합 손실 함수 (L = L_KL + 0.1*L_L2 + 0.1*L_unif)
+        P = probs[target_idx] # 타겟 셀의 클래스 확률 분포 [5]
         
-        loss = loss_obj + loss_cls + 0.1 * loss_bg
+        # (A) L_KL: KL Divergence
+        # KL(P||T) = sum(P * log(P/T))
+        plus_eps = 1e-10
+        loss_kl = (P * torch.log((P + plus_eps) / (T + plus_eps))).sum()
+        
+        # (B) L_L2: L2 Distance
+        loss_l2 = torch.norm(P - T, p=2)
+        
+        # (C) L_unif: -Variance (균등성 극대화)
+        loss_unif = -torch.var(P)
+        
+        # (D) L_obj: Detection assumed constraint (YOLO 전용 보조 항)
+        # 탐지는 완료되었다고 가정하므로 Obj를 0.9 이상으로 유지
+        loss_obj = (objs[target_idx] - 0.95) ** 2
+        
+        # 배경 억제 (Noise 지우기)
+        bg_objs = torch.cat([objs[:target_idx], objs[target_idx+1:]])
+        loss_bg = (bg_objs ** 2).mean()
+        
+        # 최종 손실 조합 (논문 가중치 0.1 반영)
+        loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif + loss_obj + 0.5 * loss_bg
         
         if (i+1) % 200 == 0:
-            current_obj = sigmoid(objs_logit[target_idx]).item()
-            current_cls = sigmoid(probs_logit[target_idx])
-            status = ", ".join([f"{p.item()*100:4.1f}%" for p in current_cls])
-            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.4f} | Obj: {current_obj:.3f} | Class: [{status}]")
+            status = ", ".join([f"{p.item()*100:4.1f}%" for p in P])
+            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.6f} | Obj: {objs[target_idx].item():.3f} | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
         with torch.no_grad():
+            # 논문 수식 (22): PGD Update Rule
+            # x_{t+1} = clip(x_t - step_size * sign(grad))
             images -= step_size * images.grad.sign()
             images = torch.clamp(images, 0, 1)
             
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """최적화된 챌린지 이미지를 탐지 보장형 관점에서 상세 리포팅"""
+    """논문 방법론으로 생성된 챌린지의 탐지 보장 및 클래스 균등성 검증"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -110,7 +123,7 @@ def load_and_predict_wyze(model, save_dir):
         print("No challenge images found.")
         return
 
-    print(f"\nEvaluating Detection-Assumed Classification of {len(image_paths)} images...")
+    print(f"\nEvaluating Boundary-Aware Challenges (Paper Methodology)...")
     model.eval()
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
@@ -131,14 +144,13 @@ def load_and_predict_wyze(model, save_dir):
             objs = torch.cat(all_objs)
             probs = torch.cat(all_probs)
             
-            # 최대로 감지된 지점 지표 출력
             max_val, max_idx = torch.max(objs, 0)
             target_probs = probs[max_idx]
             
-            # 탐지 보장 확인 (Obj > 0.8일 때 OK)
-            status = " [OK]" if max_val.item() > 0.8 else "[WARN]"
+            # 탐지 상태 OK 확인 (Obj > 0.8)
+            det_status = "OK" if max_val.item() > 0.8 else "FAIL"
             prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(target_probs)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Det:{status} Obj:{max_val.item():.3f} | {prob_str}")
+            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Det:{det_status} Obj:{max_val.item():.3f} | {prob_str}")
 
 def main():
     print(f"Using device: {DEVICE}")
