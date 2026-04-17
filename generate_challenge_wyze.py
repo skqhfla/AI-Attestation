@@ -42,11 +42,11 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, step_size=0.02, top_k=50):
-    """PGD를 사용하여 탐지된 주요 객체(Top-K cells)의 클래스 확률이 균등하게 0.2가 되도록 최적화"""
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, step_size=0.02):
+    """PGD를 사용하여 '가장 확실하게 탐지된 단 하나의 객체'의 클래스 확률을 0.2로 최적화"""
     target_prob = 0.2
-    obj_idx = [4, 14, 24] # Objectness 채널
-    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29] # Class 채널
+    obj_idx = [4, 14, 24]
+    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
     for i in range(max_iters):
         images.requires_grad = True
@@ -56,35 +56,32 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, st
         all_class_probs = []
         
         for head in [d32, d16]:
-            # Objectness 추출 [3, H, W]
             obj = sigmoid(head[obj_idx])
-            all_obj_scores.append(obj.view(-1))
-            
-            # Class Probabilities 추출 [3, 5, H, W]
+            all_obj_scores.append(obj.reshape(-1))
             cls = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
-            all_class_probs.append(cls.permute(0, 2, 3, 1).reshape(-1, 5)) # [3*H*W, 5]
+            all_class_probs.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
             
         objs = torch.cat(all_obj_scores)
         probs = torch.cat(all_class_probs)
         
-        # 1. Objectness가 높은 상위 K개 셀(객체) 선정
-        top_scores, top_indices = torch.topk(objs, top_k)
-        target_probs = probs[top_indices] # [K, 5]
+        # 1. 가장 높은 Objectness를 가진 '단 하나의 셀' 선정
+        top_val, top_idx = torch.topk(objs, 1)
+        target_cell_probs = probs[top_idx[0]] # [5]
         
-        # 2. 객체 단위 L2 Loss: 선택된 각 객체 내부의 클래스 균형 최적화
-        # 각 셀(K) 마다 5개 클래스가 0.2에 도달하도록 유도
-        loss_uniform = ((target_probs - target_prob) ** 2).mean()
+        # 2. 손실 함수 설계
+        # (A) Top-1 셀의 5개 클래스 확률을 정확히 20%(0.2)로 유도
+        loss_uniform = ((target_cell_probs - target_prob) ** 2).sum()
+        # (B) 해당 셀이 '확실한 물체'로 인식되도록 Objectness 유도 (0.8+)
+        loss_obj = (objs[top_idx[0]] - 0.8) ** 2
+        # (C) 배경 억제: 나머지 구역의 Objectness를 0으로 강제 (배경 노이즈 제거)
+        bg_objs = torch.cat([objs[:top_idx[0]], objs[top_idx[0]+1:]])
+        loss_bg = (bg_objs ** 2).mean()
         
-        # 3. 보조 Loss: Objectness를 적정 수준(0.5)으로 유지하여 그라디언트 활성화
-        # 물체가 아예 없으면 클래스 최적화가 무의미하므로 0.5 정도로 유도
-        loss_obj = ((top_scores - 0.5) ** 2).mean()
-        
-        loss = loss_uniform + 0.1 * loss_obj
+        loss = loss_uniform + 0.1 * loss_obj + 0.5 * loss_bg
         
         if (i+1) % 100 == 0:
-            avg_top_probs = target_probs.mean(dim=0)
-            status = ", ".join([f"{p.item()*100:.1f}%" for p in avg_top_probs])
-            print(f"  [Iter {i+1:03d}] Loss: {loss.item():.6f} | Obj: {top_scores.mean().item():.3f} | Top-K Probs: [{status}]")
+            status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_cell_probs])
+            print(f"  [Iter {i+1:03d}] Loss: {loss.item():.6f} | Obj: {objs[top_idx[0]].item():.3f} | Top-1: [{status}]")
 
         model.zero_grad()
         loss.backward()
@@ -96,7 +93,7 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, st
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """생성된 챌린지 이미지를 로드하여 클래스별 평균 확률 리포팅"""
+    """생성된 챌린지 이미지를 로드하여 '가장 높은 탐지 신뢰도'를 가진 구역의 확률 리포팅"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -104,8 +101,9 @@ def load_and_predict_wyze(model, save_dir):
         print("No challenge images found.")
         return
 
-    print(f"\nEvaluating {len(image_paths)} optimized challenge images...")
+    print(f"\nEvaluating Top-1 Detection of {len(image_paths)} challenge images...")
     model.eval()
+    obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
     with torch.no_grad():
@@ -114,16 +112,22 @@ def load_and_predict_wyze(model, save_dir):
             img_tensor = transform(img).unsqueeze(0).to(DEVICE)
             d32, d16 = model(img_tensor)
             
-            # 클래스별 평균 확률 계산
-            class_probs = []
+            all_objs = []
+            all_probs = []
             for head in [d32, d16]:
-                # head[class_idx] -> [15, H, W] -> [3, 5, H, W] -> sigmoid -> mean over (0,2,3) -> [5]
+                all_objs.append(sigmoid(head[obj_idx]).reshape(-1))
                 p = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
-                class_probs.append(p.mean(dim=(0, 2, 3)))
+                all_probs.append(p.permute(0, 2, 3, 1).reshape(-1, 5))
             
-            final_avg_probs = torch.stack(class_probs).mean(dim=0)
-            prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(final_avg_probs)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | {prob_str}")
+            objs = torch.cat(all_objs)
+            probs = torch.cat(all_probs)
+            
+            # 가장 높은 Objectness를 가진 칸 찾기
+            max_val, max_idx = torch.max(objs, 0)
+            target_probs = probs[max_idx] # [5]
+            
+            prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(target_probs)])
+            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Obj:{max_val.item():.3f} | {prob_str}")
 
 def main():
     print(f"Using device: {DEVICE}")
