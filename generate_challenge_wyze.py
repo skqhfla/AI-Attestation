@@ -42,46 +42,55 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, step_size=0.02):
-    """PGD를 사용하여 '가장 확실하게 탐지된 단 하나의 객체'의 클래스 확률을 0.2로 최적화"""
-    target_prob = 0.2
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.01):
+    """로짓 기반 타겟 락킹을 통해 탐지는 보장(Obj > 0.9)하고 클래스는 20% 균등화하도록 최적화"""
+    #目标: Sigmoid(4.5) ≈ 0.99 (Objectness), Sigmoid(-1.386) ≈ 0.2 (Class)
+    target_obj_logit = 4.5
+    target_cls_logit = -1.386
+    
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+    
+    target_idx = None # 최적화할 특정 셀(Grid)을 첫 루프에서 고정
     
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        all_obj_scores = []
-        all_class_probs = []
+        all_obj_logits = []
+        all_class_logits = []
         
         for head in [d32, d16]:
-            obj = sigmoid(head[obj_idx])
-            all_obj_scores.append(obj.reshape(-1))
-            cls = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
-            all_class_probs.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
+            all_obj_logits.append(head[obj_idx].reshape(-1))
+            cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
+            all_class_logits.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
             
-        objs = torch.cat(all_obj_scores)
-        probs = torch.cat(all_class_probs)
+        objs_logit = torch.cat(all_obj_logits)
+        probs_logit = torch.cat(all_class_logits)
         
-        # 1. 가장 높은 Objectness를 가진 '단 하나의 셀' 선정
-        top_val, top_idx = torch.topk(objs, 1)
-        target_cell_probs = probs[top_idx[0]] # [5]
+        # 1. 첫 루프에서 가장 가능성 높은 타겟 셀 고정 (Target Locking)
+        if target_idx is None:
+            _, target_idx = torch.max(objs_logit, 0)
+            target_idx = target_idx.item()
+            print(f"  [Target Locking] Index: {target_idx}")
+
+        # 2. 손실 함수 설계 (로짓 영역에서 직접 타겟팅)
+        # (A) 타겟 셀의 Objectness를 4.5(약 99%)로 유도
+        loss_obj = (objs_logit[target_idx] - target_obj_logit) ** 2
+        # (B) 타겟 셀의 5개 클래스 로짓을 -1.386(약 20%)으로 유도
+        loss_cls = ((probs_logit[target_idx] - target_cls_logit) ** 2).sum()
+        # (C) 배경 억제: 나머지 구역의 Objectness 로짓을 -10.0(거의 0)으로 강제
+        # 슬라이싱을 이용해 타겟 외의 모든 로짓 선택
+        bg_logits = torch.cat([objs_logit[:target_idx], objs_logit[target_idx+1:]])
+        loss_bg = ((bg_logits + 10.0) ** 2).mean() # -10.0 근처로 유도
         
-        # 2. 손실 함수 설계
-        # (A) Top-1 셀의 5개 클래스 확률을 정확히 20%(0.2)로 유도
-        loss_uniform = ((target_cell_probs - target_prob) ** 2).sum()
-        # (B) 해당 셀이 '확실한 물체'로 인식되도록 Objectness 유도 (0.8+)
-        loss_obj = (objs[top_idx[0]] - 0.8) ** 2
-        # (C) 배경 억제: 나머지 구역의 Objectness를 0으로 강제 (배경 노이즈 제거)
-        bg_objs = torch.cat([objs[:top_idx[0]], objs[top_idx[0]+1:]])
-        loss_bg = (bg_objs ** 2).mean()
+        loss = loss_obj + loss_cls + 0.1 * loss_bg
         
-        loss = loss_uniform + 0.1 * loss_obj + 0.5 * loss_bg
-        
-        if (i+1) % 100 == 0:
-            status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_cell_probs])
-            print(f"  [Iter {i+1:03d}] Loss: {loss.item():.6f} | Obj: {objs[top_idx[0]].item():.3f} | Top-1: [{status}]")
+        if (i+1) % 200 == 0:
+            current_obj = sigmoid(objs_logit[target_idx]).item()
+            current_cls = sigmoid(probs_logit[target_idx])
+            status = ", ".join([f"{p.item()*100:4.1f}%" for p in current_cls])
+            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.4f} | Obj: {current_obj:.3f} | Class: [{status}]")
 
         model.zero_grad()
         loss.backward()
@@ -93,7 +102,7 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=500, st
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """생성된 챌린지 이미지를 로드하여 '가장 높은 탐지 신뢰도'를 가진 구역의 확률 리포팅"""
+    """최적화된 챌린지 이미지를 탐지 보장형 관점에서 상세 리포팅"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -101,7 +110,7 @@ def load_and_predict_wyze(model, save_dir):
         print("No challenge images found.")
         return
 
-    print(f"\nEvaluating Top-1 Detection of {len(image_paths)} challenge images...")
+    print(f"\nEvaluating Detection-Assumed Classification of {len(image_paths)} images...")
     model.eval()
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
@@ -122,12 +131,14 @@ def load_and_predict_wyze(model, save_dir):
             objs = torch.cat(all_objs)
             probs = torch.cat(all_probs)
             
-            # 가장 높은 Objectness를 가진 칸 찾기
+            # 최대로 감지된 지점 지표 출력
             max_val, max_idx = torch.max(objs, 0)
-            target_probs = probs[max_idx] # [5]
+            target_probs = probs[max_idx]
             
+            # 탐지 보장 확인 (Obj > 0.8일 때 OK)
+            status = " [OK]" if max_val.item() > 0.8 else "[WARN]"
             prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(target_probs)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Obj:{max_val.item():.3f} | {prob_str}")
+            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Det:{status} Obj:{max_val.item():.3f} | {prob_str}")
 
 def main():
     print(f"Using device: {DEVICE}")
