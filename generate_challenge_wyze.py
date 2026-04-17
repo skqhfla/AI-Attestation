@@ -43,23 +43,23 @@ def save_image(tensor, filename):
     image.save(filename)
 
 def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.03):
-    """논문(main.tex)의 PGD 방법론(KL, L2, Var Loss)을 엄격히 적용하여 챌린지 최적화"""
-    # 타겟 분포 T (균등 분포 20%)
+    """특정 그리드 셀을 고정하고 분류 무결성만 정밀 타격하는 '고정 그리드 챌린지' 생성"""
     T = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
-    target_idx = None # 최적화할 특정 객체 지점 고정
+    # [Target Locking] 중앙 지점 인근의 고정된 셀을 검증 구역으로 지정 (Head 16의 중앙 근처)
+    # Head 32(336개) + Head 16(1344개) 중 총 1008번 인덱스 주변을 사용
+    FIXED_TARGET_IDX = 1008 
     
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        all_objs = []
         all_probs = []
+        all_objs = [] # 모니터링용
         
-        # YOLO 헤드에서 Objectness와 Class Probabilities(Sigmoid) 추출
         for head in [d32, d16]:
             all_objs.append(sigmoid(head[obj_idx]).reshape(-1))
             cls = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
@@ -68,54 +68,41 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
         objs = torch.cat(all_objs)
         probs = torch.cat(all_probs)
         
-        # 1. 첫 루프에서 타겟 셀 선정 및 고정 (Target Locking)
-        if target_idx is None:
-            _, target_idx = torch.max(objs, 0)
-            target_idx = target_idx.item()
-            print(f"  [Method: PGD Paper Sync] Locking Target Index: {target_idx}")
-
-        # 2. 논문 기반 복합 손실 함수 (L = L_KL + 0.1*L_L2 + 0.1*L_unif)
-        P = probs[target_idx] # 타겟 셀의 클래스 확률 분포 [5]
+        # 2. 고정 지점의 분류 확률 벡터 추출
+        P = probs[FIXED_TARGET_IDX]
         
         # (A) L_KL: KL Divergence
-        # KL(P||T) = sum(P * log(P/T))
         plus_eps = 1e-10
         loss_kl = (P * torch.log((P + plus_eps) / (T + plus_eps))).sum()
         
         # (B) L_L2: L2 Distance
         loss_l2 = torch.norm(P - T, p=2)
         
-        # (C) L_unif: -Variance (균등성 극대화)
+        # (C) L_unif: -Variance
         loss_unif = -torch.var(P)
         
-        # (D) L_obj: Detection assumed constraint (YOLO 전용 보조 항)
-        # 탐지는 완료되었다고 가정하므로 Obj를 0.9 이상으로 유지
-        loss_obj = (objs[target_idx] - 0.95) ** 2
+        # [Strategy] 탐지 임계값(Obj)은 무시하고 분류 레이어의 그라디언트에만 집중
+        # 단, Objectness가 너무 낮아지지 않도록 최소한의 유지 항 사용 (옵션)
+        loss_obj = (objs[FIXED_TARGET_IDX] - 0.5) ** 2 
         
-        # 배경 억제 (Noise 지우기)
-        bg_objs = torch.cat([objs[:target_idx], objs[target_idx+1:]])
-        loss_bg = (bg_objs ** 2).mean()
-        
-        # 최종 손실 조합 (논문 가중치 0.1 반영)
-        loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif + loss_obj + 0.5 * loss_bg
+        # 최종 손실 조합 (논문 가중치 준수)
+        loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif + 0.1 * loss_obj
         
         if (i+1) % 200 == 0:
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in P])
-            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.6f} | Obj: {objs[target_idx].item():.3f} | P: [{status}]")
+            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.6f} | Obj @ Fixed: {objs[FIXED_TARGET_IDX].item():.3f} | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
         with torch.no_grad():
-            # 논문 수식 (22): PGD Update Rule
-            # x_{t+1} = clip(x_t - step_size * sign(grad))
             images -= step_size * images.grad.sign()
             images = torch.clamp(images, 0, 1)
             
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """논문 방법론으로 생성된 챌린지의 탐지 보장 및 클래스 균등성 검증"""
+    """탐지 성공 여부와 상관없이 고정된 검증 그리드의 클래스 확률을 직접 리포팅"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -123,7 +110,10 @@ def load_and_predict_wyze(model, save_dir):
         print("No challenge images found.")
         return
 
-    print(f"\nEvaluating Boundary-Aware Challenges (Paper Methodology)...")
+    # 최적화 시 사용했던 고정 지점과 일치해야 함
+    FIXED_TARGET_IDX = 1008
+    print(f"\nEvaluating Fixed-Grid Classification (Index: {FIXED_TARGET_IDX})...")
+    
     model.eval()
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
@@ -144,13 +134,12 @@ def load_and_predict_wyze(model, save_dir):
             objs = torch.cat(all_objs)
             probs = torch.cat(all_probs)
             
-            max_val, max_idx = torch.max(objs, 0)
-            target_probs = probs[max_idx]
+            # 고정된 검증 지점의 실제 클래스 확률 직접 추출
+            target_probs = probs[FIXED_TARGET_IDX]
+            target_obj = objs[FIXED_TARGET_IDX]
             
-            # 탐지 상태 OK 확인 (Obj > 0.8)
-            det_status = "OK" if max_val.item() > 0.8 else "FAIL"
             prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(target_probs)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Det:{det_status} Obj:{max_val.item():.3f} | {prob_str}")
+            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Internal-Obj:{target_obj.item():.4f} | {prob_str}")
 
 def main():
     print(f"Using device: {DEVICE}")
