@@ -109,11 +109,60 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
             step_size *= 0.5
             
     return images.detach()
+
+def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=1000, step_size=0.01):
+    """[멀티라벨 전용 검증용] 각 클래스를 독립적으로 0.2에 안착시킴 (Softmax 없음)"""
+    target_score = 0.2
+    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+    FIXED_TARGET_IDX = 1022 
+
+    with torch.no_grad():
+        h_center, w_center = 8 * 16, 14 * 16
+        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.05
+        images = torch.clamp(images, 0, 1)
+
+    momentum = torch.zeros_like(images)
+    mu = 0.9 
+
+    for i in range(max_iters):
+        images.requires_grad = True
+        d32, d16 = model(images)
+        
+        all_cls_logits = []
+        for head in [d32, d16]:
+            cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
+            all_cls_logits.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
+        probs_logit = torch.cat(all_cls_logits)
+        
+        target_P_logit = probs_logit[FIXED_TARGET_IDX]
+        target_P_scores = torch.sigmoid(target_P_logit)
+        
+        loss = torch.mean((target_P_scores - target_score)**2)
+        
+        if (i+1) % 200 == 0:
+            status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_scores])
+            diff = target_P_scores.max() - target_P_scores.min()
+            print(f"  [ML-Exp {i+1:04d}] Max-Gap: {diff.item()*100:.1f}% | S: [{status}]")
+
+        model.zero_grad()
+        loss.backward()
+        
+        if images.grad is not None:
+            grad = images.grad
+            grad = grad / (torch.mean(torch.abs(grad)) + 1e-10)
+            momentum = mu * momentum + grad
+            
+            with torch.no_grad():
+                images -= step_size * momentum.sign() 
+                images = torch.clamp(images, 0, 1)
+        
+        if (i+1) % 400 == 0:
+            step_size *= 0.5
             
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """최종 생성된 이미지를 고정 타겟 지점(1022)에서 리포트"""
+    """최종 생성된 이미지를 고정 타겟 지점(1022)에서 시그모이드 점수로 리포트"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -121,10 +170,9 @@ def load_and_predict_wyze(model, save_dir):
         return
 
     FIXED_TARGET_IDX = 1022
-    print(f"\nEvaluating Methodology-Matched Challenges (Index {FIXED_TARGET_IDX})...")
+    print(f"\nEvaluating Multi-Label Challenges (Independent Sigmoids at Index {FIXED_TARGET_IDX})...")
     
     model.eval()
-    obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
     with torch.no_grad():
@@ -138,10 +186,10 @@ def load_and_predict_wyze(model, save_dir):
                 p = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
                 p_logits.append(p.permute(0, 2, 3, 1).reshape(-1, 5))
             
-            # 최종 리포트에서도 Softmax 기반 확률 분포 출력
-            probs = F.softmax(torch.cat(p_logits)[FIXED_TARGET_IDX], dim=0)
+            # 멀티라벨 모델이므로 Sigmoid 점수를 출력
+            scores = torch.sigmoid(torch.cat(p_logits)[FIXED_TARGET_IDX])
             
-            prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(probs)])
+            prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(scores)])
             print(f"[{i+1:03d}] {os.path.basename(img_path)} | {prob_str}")
 
 def main():
