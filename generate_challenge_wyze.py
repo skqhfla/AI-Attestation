@@ -42,23 +42,27 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
-    """물리적 패치 초기화(Seed)와 로짓 최적화를 결합하여 20% 균등 지문 생성"""
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, step_size=0.05):
+    """체크보드 패치와 가변 스텝을 사용하여 2,000회 내에 수렴하는 가속 최적화 엔진"""
     # 목표 로짓 설정: Sigmoid(-1.386) ≈ 0.2
     target_cls_logit = -1.386
-    target_obj_logit = 1.386 # 약 80% 탐지 목표
+    target_obj_logit = 1.6 # 약 83% 탐지 목표
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     FIXED_TARGET_IDX = 1022 
 
-    # [1. 물리적 패치 초기화] "Seed Patch"
-    # Index 1022는 Head 16의 (Row 8, Col 14) 부근. 
-    # 256x448 이미지에서 중앙 부근 좌표 계산 (Head 16 = 16px stride)
+    # [1. 초기화] 고대비 체크보드 시드 (Checkerboard Seed)
+    # 256x448 이미지의 중앙(Head 16, Row 8, Col 14) 부근에 엣지 정보 주입
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
-        # 중앙 16x16 영역을 밝은 색(0.8)으로 칠해 모델의 반응을 강제로 끌어냄
-        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.8
+        for hh in range(h_center-8, h_center+8):
+            for ww in range(w_center-8, w_center+8):
+                # 4x4 크기의 체크보드 패턴 (0.1과 0.9 교차)
+                if ((hh // 4) + (ww // 4)) % 2 == 0:
+                    images[:, :, hh, ww] = 0.9
+                else:
+                    images[:, :, hh, ww] = 0.1
 
     for i in range(max_iters):
         images.requires_grad = True
@@ -80,16 +84,16 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
         # (A) 클래스 독립적 최적화 (20% 목표)
         loss_cls = ((target_P_logit - target_cls_logit) ** 2).sum()
         
-        # (B) 탐지 활성화 손실 (Obj 0.8 목표)
+        # (B) 탐지 활성화 손실
         loss_obj = (target_O_logit - target_obj_logit) ** 2
         
-        # (C) 배경 억제 (매우 약하게 설정하여 타겟 방해 방지)
+        # (C) 배경 억제
         bg_logits = torch.cat([objs_logit[:FIXED_TARGET_IDX], objs_logit[FIXED_TARGET_IDX+1:]])
-        loss_bg = (torch.clamp(bg_logits + 4.0, min=0) ** 2).mean() # -4.0 이하로만 유도
+        loss_bg = (torch.clamp(bg_logits + 5.0, min=0) ** 2).mean()
         
         loss = 2.0 * loss_cls + 1.0 * loss_obj + 0.001 * loss_bg
         
-        if (i+1) % 200 == 0:
+        if (i+1) % 400 == 0:
             current_P = sigmoid(target_P_logit)
             current_O = sigmoid(target_O_logit)
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in current_P])
@@ -98,28 +102,27 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
         model.zero_grad()
         loss.backward()
         
-        if images.grad is None or images.grad.sum() == 0:
-            # 그라디언트 소멸 시 노이즈를 주어 탈출 시도
+        # [2. 다이내믹 스텝] Warm-up 전략
+        # 초반 300회는 0.1로 강력하게 밀고, 이후 0.05로 정밀 튜닝
+        current_step = step_size * 2.0 if i < 300 else step_size
+        
+        if images.grad is not None:
             with torch.no_grad():
-                images += torch.randn_like(images) * 0.01
-        else:
-            with torch.no_grad():
-                images -= step_size * images.grad.sign()
+                images -= current_step * images.grad.sign()
                 images = torch.clamp(images, 0, 1)
             
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """정중앙 고정 그리드(1022)의 실시간 확률 상세 리포팅"""
+    """최종 생성된 가속 챌린지 지표 리포팅"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
     if not image_paths:
-        print("No challenge images found.")
         return
 
     FIXED_TARGET_IDX = 1022
-    print(f"\nEvaluating Fixed-Center Grid Classification (Index: {FIXED_TARGET_IDX})...")
+    print(f"\nEvaluating Final Challenges (Index: {FIXED_TARGET_IDX})...")
     
     model.eval()
     obj_idx = [4, 14, 24]
@@ -145,7 +148,7 @@ def load_and_predict_wyze(model, save_dir):
             target_obj = objs[FIXED_TARGET_IDX]
             
             prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(target_probs)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Internal-Obj:{target_obj.item():.4f} | {prob_str}")
+            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Obj:{target_obj.item():.4f} | {prob_str}")
 
 def main():
     print(f"Using device: {DEVICE}")
