@@ -110,16 +110,18 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
             
     return images.detach()
 
-def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=1500, step_size=0.01):
-    """[황금 ROI 선점] IDX 361번 지점에서 모든 클래스를 정교하게 20%에 정렬"""
-    logit_target = -1.38629 # 20% 대응 로짓
+def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=2000, step_size=0.05):
+    """[초정밀 3% 안착 엔진] 4단계 보폭 스케줄러와 클래스별 가중치 보정 적용"""
+    logit_target_base = -1.38629 
+    # 약세 클래스(vehicle, face)를 위한 미세 오프셋 보정
+    logit_targets = torch.tensor([logit_target_base, logit_target_base + 0.1, logit_target_base, logit_target_base, logit_target_base + 0.1], device=DEVICE)
+    
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
     FIXED_TARGET_IDX = 361 
 
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
-        # 초기화: 과감하게 중간값에서 출발
         images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.05
         images = torch.clamp(images, 0, 1)
 
@@ -127,6 +129,11 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=150
     mu = 0.9 
 
     for i in range(max_iters):
+        # [4단계 보폭 스케줄러]
+        if i == 400: step_size = 0.01
+        elif i == 1000: step_size = 0.002
+        elif i == 1500: step_size = 0.0005
+
         images.requires_grad = True
         d32, d16 = model(images)
         
@@ -139,28 +146,22 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=150
         target_P_logit = probs_logit[FIXED_TARGET_IDX]
         target_P_scores = torch.sigmoid(target_P_logit)
         
-        # [지능형 동적 가중치 전략]
-        # 1. 잘나가는 클래스 (22% 초과) -> 가중치 0 (마스킹)
-        # 2. 고전하는 클래스 (18% 미만) -> 가중치 10 (증폭)
-        # 3. 적정 클래스 (18%~22%) -> 가중치 1
-        weights = torch.ones_like(target_P_scores)
-        weights = torch.where(target_P_scores > 0.22, 0.0, weights)
-        weights = torch.where(target_P_scores < 0.18, 10.0, weights)
+        current_gap = (target_P_scores.max() - target_P_scores.min()).item() * 100
         
-        # 가중치가 반영된 독립 로짓 MSE 손실
-        loss = (weights * (target_P_logit - logit_target)**2).sum()
-        
-        if (i+1) % 500 == 0:
-            status = ", ".join([f"{CLASS_NAMES[j]}:{p.item()*100:4.1f}%" for j, p in enumerate(target_P_scores)])
-            diff = target_P_scores.max() - target_P_scores.min()
-            print(f"  [Ultimate {i+1:04d}] Max-Gap: {diff.item()*100:4.1f}% | {status}")
+        # [조기 종료] 2.5% 미만 달성 시 안착 성공으로 간주
+        if i > 1200 and current_gap < 2.5:
+            print(f"  [Precision-Stop {i:04d}] Target Reached! Gap: {current_gap:.2f}%")
+            break
 
-        model.zero_grad()
-        loss.backward()
+        # [지능형 동적 가중치] 15% 미만 낙오 클래스에 20배 초강력 부스팅
+        weights = torch.ones_like(target_P_scores)
+        weights = torch.where(target_P_scores < 0.15, 20.0, weights)
+        weights = torch.where(target_P_scores > 0.25, 0.1, weights) # 과수렴 방지
         
-        if images.grad is not None:
-            grad = images.grad
-            grad = grad / (torch.mean(torch.abs(grad)) + 1e-10)
+        loss = (weights * (target_P_logit - logit_targets)**2).sum()
+        
+        if (i+1) % 500 == 0 or i == 0:
+            status = ", ".join([f"{CLASS_NAMES[j]}:{p.item()*100:4.1f}%" for j, p in enumerate(target_P_scores)])
             momentum = mu * momentum + grad
             
             with torch.no_grad():
