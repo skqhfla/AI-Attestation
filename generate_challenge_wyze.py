@@ -42,26 +42,26 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, step_size=0.05):
-    """[최종 하이퍼파라미터 최적화] 방법론 유지 + 양자화 지형 돌파 스케줄링"""
-    # 목표 분포: [0.2, 0.2, 0.2, 0.2, 0.2]
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, step_size=0.01):
+    """[최종 Momentum PGD] 수식은 논문 일치 + 최적화는 Momentum으로 안정화"""
     target_dist = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
-    
-    obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     FIXED_TARGET_IDX = 1022 
 
-    # [1. 초기화] 발산 방지를 위해 중간값(0.5) + 미세 가우시안 노이즈로 출발
+    # [1. 초기화] 0.5 중간값에서 출발하여 균형 잡힌 로짓 유도
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
-        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.05
+        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.02
         images = torch.clamp(images, 0, 1)
+
+    # Momentum 초기화
+    momentum = torch.zeros_like(images)
+    mu = 0.9 # Momentum 가중치
 
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        # 로짓 추출 및 Softmax 정규화
         all_cls_logits = []
         for head in [d32, d16]:
             cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
@@ -71,35 +71,39 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
         target_P_logit = probs_logit[FIXED_TARGET_IDX]
         target_P_probs = F.softmax(target_P_logit, dim=0)
         
-        # [2. 논문 공식 적용 (Selection 3.2.1)]
+        # [2. 논문 수식 (BAIV)] 1.0 : 0.1 : 0.1 가중치 엄수
         loss_kl = F.kl_div(F.log_softmax(target_P_logit, dim=0), target_dist, reduction='batchmean')
         loss_l2 = torch.norm(target_P_probs - target_dist, p=2)
         loss_unif = torch.var(target_P_probs)
         
-        # 방법론 가중치 준수: KL(1.0) + L2(0.1) + Var(0.1)
         loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif
         
         if (i+1) % 400 == 0:
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_probs])
             diff = target_P_probs.max() - target_P_probs.min()
-            print(f"  [PGD-Tuned {i+1:04d}] Loss: {loss.item():.4f} | Gap: {diff.item()*100:.1f}% | P: [{status}]")
+            print(f"  [Momentum PGD {i+1:04d}] Loss: {loss.item():.4f} | Gap: {diff.item()*100:.1f}% | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
-        # [3. Staircase Step Scheduling] 
-        # 8비트 양자화 임계값(1/255 ≈ 0.0039) 아래로 떨어지지 않도록 설계
-        if i < 800:
-            current_step = step_size          # 충분히 큰 스텝으로 계단 탈출 (0.05)
-        elif i < 1500:
-            current_step = step_size * 0.2    # 정밀 접근 (0.01)
-        else:
-            current_step = step_size * 0.05   # 최종 안착 (0.0025, 반올림으로 작용)
-
+        # [3. Momentum 업데이트]
+        # Sign 대신 L2-Normalized Gradient를 사용하여 부드러운 하강 유도
         if images.grad is not None:
+            grad = images.grad
+            # 기울기 정규화 및 모멘텀 누적
+            grad = grad / (torch.mean(torch.abs(grad)) + 1e-10)
+            momentum = mu * momentum + grad
+            
             with torch.no_grad():
-                images -= current_step * images.grad.sign()
+                # 진동 방지를 위해 정규화된 모멘텀 사용
+                images -= step_size * momentum.sign() # 안정성을 위해 Sign Momentum 사용 
                 images = torch.clamp(images, 0, 1)
+        
+        # 스텝 사이즈 스케줄링 (2,000회에 걸쳐 서서히 정밀화)
+        if (i+1) % 500 == 0:
+            step_size *= 0.5
+            
+    return images.detach()
             
     return images.detach()
 
