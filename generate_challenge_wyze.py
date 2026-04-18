@@ -110,12 +110,12 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
             
     return images.detach()
 
-def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=3000, step_size=0.01):
-    """[최종 Ultimate 엔진] 기필코 20%를 맞추기 위한 지능형 기울기 마스킹 & 증폭 최적화"""
+def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=1500, step_size=0.01):
+    """[황금 ROI 선점] IDX 361번 지점에서 모든 클래스를 정교하게 20%에 정렬"""
     logit_target = -1.38629 # 20% 대응 로짓
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
-    FIXED_TARGET_IDX = 1022 
+    FIXED_TARGET_IDX = 361 
 
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
@@ -182,9 +182,9 @@ def load_and_predict_wyze(model, save_dir):
     if not image_paths:
         return
 
-    FIXED_TARGET_IDX = 1022
+    FIXED_TARGET_IDX = 361
     CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
-    print(f"\nEvaluating Multi-Label Challenges (Independent Sigmoids at Index {FIXED_TARGET_IDX})...")
+    print(f"\nEvaluating Golden-ROI Challenges (Index {FIXED_TARGET_IDX})...")
     
     model.eval()
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
