@@ -42,26 +42,26 @@ def save_image(tensor, filename):
     image = transforms.ToPILImage()(tensor)
     image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
-    """[논문 일치판] main.tex 3.2.1 및 기준 코드 로직 준수"""
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, step_size=0.05):
+    """[최종 하이퍼파라미터 최적화] 방법론 유지 + 양자화 지형 돌파 스케줄링"""
     # 목표 분포: [0.2, 0.2, 0.2, 0.2, 0.2]
     target_dist = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
-    FIXED_TARGET_IDX = 1022 # 정중앙 ROI 고정
+    FIXED_TARGET_IDX = 1022 
 
-    # [1. 초기화] 논문 설명대로 랜덤 노이즈 기반 초기화
+    # [1. 초기화] 발산 방지를 위해 중간값(0.5) + 미세 가우시안 노이즈로 출발
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
-        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = torch.rand((1, 3, 16, 16), device=DEVICE)
+        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.05
+        images = torch.clamp(images, 0, 1)
 
-    current_step = step_size
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        # 로짓 및 확률 추출 (논문의 확률 분포 정의에 맞게 Softmax 적용)
+        # 로짓 추출 및 Softmax 정규화
         all_cls_logits = []
         for head in [d32, d16]:
             cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
@@ -72,34 +72,34 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
         target_P_probs = F.softmax(target_P_logit, dim=0)
         
         # [2. 논문 공식 적용 (Selection 3.2.1)]
-        # L_KL: KL-Divergence
         loss_kl = F.kl_div(F.log_softmax(target_P_logit, dim=0), target_dist, reduction='batchmean')
-        
-        # L_L2: L2 Norm (가중치 0.1)
         loss_l2 = torch.norm(target_P_probs - target_dist, p=2)
-        
-        # L_unif: Variance (가중치 0.1)
         loss_unif = torch.var(target_P_probs)
         
-        # 총 손실: KL + 0.1 * L2 + 0.1 * Var
+        # 방법론 가중치 준수: KL(1.0) + L2(0.1) + Var(0.1)
         loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif
         
-        if (i+1) % 200 == 0:
+        if (i+1) % 400 == 0:
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_probs])
             diff = target_P_probs.max() - target_P_probs.min()
-            print(f"  [PGD Opt {i+1:04d}] Loss: {loss.item():.4f} | Gap: {diff.item()*100:.1f}% | P: [{status}]")
+            print(f"  [PGD-Tuned {i+1:04d}] Loss: {loss.item():.4f} | Gap: {diff.item()*100:.1f}% | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
-        # [3. PGD 업데이트 및 Step Decay]
+        # [3. Staircase Step Scheduling] 
+        # 8비트 양자화 임계값(1/255 ≈ 0.0039) 아래로 떨어지지 않도록 설계
+        if i < 800:
+            current_step = step_size          # 충분히 큰 스텝으로 계단 탈출 (0.05)
+        elif i < 1500:
+            current_step = step_size * 0.2    # 정밀 접근 (0.01)
+        else:
+            current_step = step_size * 0.05   # 최종 안착 (0.0025, 반올림으로 작용)
+
         if images.grad is not None:
             with torch.no_grad():
                 images -= current_step * images.grad.sign()
                 images = torch.clamp(images, 0, 1)
-        
-        # 매 iteration 마다 0.99배씩 감쇄 (성공 코드 로직)
-        current_step *= 0.99
             
     return images.detach()
 
