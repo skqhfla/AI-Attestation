@@ -43,25 +43,25 @@ def save_image(tensor, filename):
     image.save(filename)
 
 def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
-    """[최종 정밀판] KL-Divergence와 동적 보상을 사용하여 모든 클래스를 20%에 명중"""
-    target_cls_logit = -1.386
-    target_dist = torch.full((num_classes,), 1.0/num_classes, device=DEVICE) # [0.2, 0.2, 0.2, 0.2, 0.2]
+    """[논문 일치판] main.tex 3.2.1 및 기준 코드 로직 준수"""
+    # 목표 분포: [0.2, 0.2, 0.2, 0.2, 0.2]
+    target_dist = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
-    FIXED_TARGET_IDX = 1022
+    FIXED_TARGET_IDX = 1022 # 정중앙 ROI 고정
 
-    # [1. 초기화] 고대비 노이즈 시드
+    # [1. 초기화] 논문 설명대로 랜덤 노이즈 기반 초기화
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
-        noise = (torch.randn((1, 3, 16, 16), device=DEVICE) * 0.5) + 0.5
-        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = torch.clamp(noise, 0, 1)
+        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = torch.rand((1, 3, 16, 16), device=DEVICE)
 
+    current_step = step_size
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        # 로짓 추출
+        # 로짓 및 확률 추출 (논문의 확률 분포 정의에 맞게 Softmax 적용)
         all_cls_logits = []
         for head in [d32, d16]:
             cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
@@ -69,52 +69,42 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
         probs_logit = torch.cat(all_cls_logits)
         
         target_P_logit = probs_logit[FIXED_TARGET_IDX]
-        P_actual = sigmoid(target_P_logit)
+        target_P_probs = F.softmax(target_P_logit, dim=0)
         
-        # [2. 복합 정밀 손실 함수]
-        # (A) KL-Divergence: 전체적인 분포의 '모양'을 20/20으로 강제
-        # YOLO의 독립 출력을 확률 분포로 정규화하여 비교
-        P_dist = F.softmax(target_P_logit, dim=0)
-        loss_kl = F.kl_div(P_dist.log().unsqueeze(0), target_dist.unsqueeze(0), reduction='batchmean')
+        # [2. 논문 공식 적용 (Selection 3.2.1)]
+        # L_KL: KL-Divergence
+        loss_kl = F.kl_div(F.log_softmax(target_P_logit, dim=0), target_dist, reduction='batchmean')
         
-        # (B) MSE with Class-Boost: 낙오자(10% 미만)에게 10배 가중치 부여
-        boost = torch.where(P_actual < 0.10, 10.0, 1.0)
-        loss_mse = (boost * (target_P_logit - target_cls_logit) ** 2).sum()
+        # L_L2: L2 Norm (가중치 0.1)
+        loss_l2 = torch.norm(target_P_probs - target_dist, p=2)
         
-        # (C) 전역 균등성 (Variance)
-        loss_var = torch.var(P_actual)
+        # L_unif: Variance (가중치 0.1)
+        loss_unif = torch.var(target_P_probs)
         
-        # 배경 억제 최소화
-        obj_all = torch.cat([h[obj_idx].reshape(-1) for h in [d32, d16]])
-        loss_bg = (torch.clamp(obj_all + 5.0, min=0) ** 2).mean()
-        
-        loss = 50.0 * loss_kl + 2.0 * loss_mse + 20.0 * loss_var + 0.001 * loss_bg
+        # 총 손실: KL + 0.1 * L2 + 0.1 * Var
+        loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif
         
         if (i+1) % 200 == 0:
-            status = ", ".join([f"{p.item()*100:4.1f}%" for p in P_actual])
-            diff = P_actual.max() - P_actual.min()
-            print(f"  [KL-Div Opt {i+1:04d}] Loss: {loss.item():.4f} | Gap: {diff.item()*100:.1f}% | P: [{status}]")
+            status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_probs])
+            diff = target_P_probs.max() - target_P_probs.min()
+            print(f"  [PGD Opt {i+1:04d}] Loss: {loss.item():.4f} | Gap: {diff.item()*100:.1f}% | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
-        # [3. 단계적 학습률 및 리프레시]
-        current_step = step_size if i < 700 else step_size * 0.2
-        
-        # 300회마다 정체 구간 탈출을 위한 픽셀 리프레시
-        if (i + 1) % 300 == 0:
-            with torch.no_grad():
-                images += torch.randn_like(images) * 0.02
-        
+        # [3. PGD 업데이트 및 Step Decay]
         if images.grad is not None:
             with torch.no_grad():
                 images -= current_step * images.grad.sign()
                 images = torch.clamp(images, 0, 1)
+        
+        # 매 iteration 마다 0.99배씩 감쇄 (성공 코드 로직)
+        current_step *= 0.99
             
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """최종 생성된 DAC 챌린지의 분류 무결성 리포트"""
+    """최종 생성된 이미지를 고정 타겟 지점(1022)에서 리포트"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -122,7 +112,7 @@ def load_and_predict_wyze(model, save_dir):
         return
 
     FIXED_TARGET_IDX = 1022
-    print(f"\nEvaluating Classification Fingerprints (Index {FIXED_TARGET_IDX})...")
+    print(f"\nEvaluating Methodology-Matched Challenges (Index {FIXED_TARGET_IDX})...")
     
     model.eval()
     obj_idx = [4, 14, 24]
@@ -135,17 +125,15 @@ def load_and_predict_wyze(model, save_dir):
             d32, d16 = model(img_tensor)
             
             p_logits = []
-            o_logits = []
             for head in [d32, d16]:
-                o_logits.append(head[obj_idx].reshape(-1))
                 p = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
                 p_logits.append(p.permute(0, 2, 3, 1).reshape(-1, 5))
             
-            probs = sigmoid(torch.cat(p_logits))[FIXED_TARGET_IDX]
-            obj = sigmoid(torch.cat(o_logits))[FIXED_TARGET_IDX]
+            # 최종 리포트에서도 Softmax 기반 확률 분포 출력
+            probs = F.softmax(torch.cat(p_logits)[FIXED_TARGET_IDX], dim=0)
             
             prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(probs)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | Obj:{obj.item():.4f} | {prob_str}")
+            print(f"[{i+1:03d}] {os.path.basename(img_path)} | {prob_str}")
 
 def main():
     print(f"Using device: {DEVICE}")
