@@ -162,16 +162,20 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=200
         
         if (i+1) % 500 == 0 or i == 0:
             status = ", ".join([f"{CLASS_NAMES[j]}:{p.item()*100:4.1f}%" for j, p in enumerate(target_P_scores)])
+            print(f"  [Precision {i+1:04d}] Gap: {current_gap:4.1f}% | {status} (Step: {step_size})")
+
+        model.zero_grad()
+        loss.backward()
+        
+        if images.grad is not None:
+            grad = images.grad
+            grad = grad / (torch.mean(torch.abs(grad)) + 1e-10)
             momentum = mu * momentum + grad
             
             with torch.no_grad():
                 # 8비트 지형 극복을 위해 일정한 강도의 Momentum Sign 업데이트 유지
                 images -= step_size * momentum.sign() 
                 images = torch.clamp(images, 0, 1)
-        
-        # 2/3 지점(2,000회) 이후부터 정밀 마무리
-        if (i+1) == 2000:
-            step_size *= 0.5
             
     return images.detach()
 
