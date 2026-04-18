@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import torchvision.transforms as transforms
+import torchvision.utils as vutils
 from PIL import Image
 from pathlib import Path
 
