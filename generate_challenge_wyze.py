@@ -43,26 +43,29 @@ def save_image(tensor, filename):
     image.save(filename)
 
 def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
-    """로짓(Logit) 영역 최적화를 통해 시그모이드 포화를 방지하고 정중앙 그리드를 타격"""
-    # 목표 로짓 설정: Sigmoid(-1.386) ≈ 0.2, Sigmoid(2.2) ≈ 0.9
+    """물리적 패치 초기화(Seed)와 로짓 최적화를 결합하여 20% 균등 지문 생성"""
+    # 목표 로짓 설정: Sigmoid(-1.386) ≈ 0.2
     target_cls_logit = -1.386
-    target_obj_logit = 2.2
+    target_obj_logit = 1.386 # 약 80% 탐지 목표
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
-    
-    # [Target Locking] Head 16의 정중앙 지점 (Anchor 1, Row 8, Col 14)
-    # Head 32(336) + Anchor1(448) + Row8(224) + Col14 = 1022
     FIXED_TARGET_IDX = 1022 
-    
+
+    # [1. 물리적 패치 초기화] "Seed Patch"
+    # Index 1022는 Head 16의 (Row 8, Col 14) 부근. 
+    # 256x448 이미지에서 중앙 부근 좌표 계산 (Head 16 = 16px stride)
+    with torch.no_grad():
+        h_center, w_center = 8 * 16, 14 * 16
+        # 중앙 16x16 영역을 밝은 색(0.8)으로 칠해 모델의 반응을 강제로 끌어냄
+        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.8
+
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
         all_cls_logits = []
         all_obj_logits = []
-        
-        # 시그모이드를 거치지 않은 원본 로짓(Logit) 추출
         for head in [d32, d16]:
             all_obj_logits.append(head[obj_idx].reshape(-1))
             cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
@@ -74,30 +77,35 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
         target_P_logit = probs_logit[FIXED_TARGET_IDX]
         target_O_logit = objs_logit[FIXED_TARGET_IDX]
         
-        # (A) 클래스 균등화 손실 (Logit L2)
+        # (A) 클래스 독립적 최적화 (20% 목표)
         loss_cls = ((target_P_logit - target_cls_logit) ** 2).sum()
         
-        # (B) 탐지 활성화 손실 (Logit L2) - 0.000 탈출용
+        # (B) 탐지 활성화 손실 (Obj 0.8 목표)
         loss_obj = (target_O_logit - target_obj_logit) ** 2
         
-        # (C) 배경 억제
+        # (C) 배경 억제 (매우 약하게 설정하여 타겟 방해 방지)
         bg_logits = torch.cat([objs_logit[:FIXED_TARGET_IDX], objs_logit[FIXED_TARGET_IDX+1:]])
-        loss_bg = ((bg_logits + 10.0) ** 2).mean()
+        loss_bg = (torch.clamp(bg_logits + 4.0, min=0) ** 2).mean() # -4.0 이하로만 유도
         
-        loss = loss_cls + 2.0 * loss_obj + 0.1 * loss_bg
+        loss = 2.0 * loss_cls + 1.0 * loss_obj + 0.001 * loss_bg
         
         if (i+1) % 200 == 0:
             current_P = sigmoid(target_P_logit)
             current_O = sigmoid(target_O_logit)
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in current_P])
-            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.4f} | Obj: {current_O.item():.4f} (Logit: {target_O_logit.item():.2f}) | P: [{status}]")
+            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.4f} | Obj: {current_O.item():.3f} | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
-        with torch.no_grad():
-            images -= step_size * images.grad.sign()
-            images = torch.clamp(images, 0, 1)
+        if images.grad is None or images.grad.sum() == 0:
+            # 그라디언트 소멸 시 노이즈를 주어 탈출 시도
+            with torch.no_grad():
+                images += torch.randn_like(images) * 0.01
+        else:
+            with torch.no_grad():
+                images -= step_size * images.grad.sign()
+                images = torch.clamp(images, 0, 1)
             
     return images.detach()
 
