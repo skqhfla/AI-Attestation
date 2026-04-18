@@ -39,58 +39,55 @@ def generate_random_image(batch_size=1, channels=3, height=IMAGE_SIZE[0], width=
 def save_image(tensor, filename):
     """텐서를 PNG 파일로 저장"""
     tensor = tensor.squeeze(0).detach().cpu()
-    image = transforms.ToPILImage()(tensor)
-    image.save(filename)
-
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.03):
-    """특정 그리드 셀을 고정하고 분류 무결성만 정밀 타격하는 '고정 그리드 챌린지' 생성"""
-    T = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
+    image = def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
+    """로짓(Logit) 영역 최적화를 통해 시그모이드 포화를 방지하고 정중앙 그리드를 타격"""
+    # 목표 로짓 설정: Sigmoid(-1.386) ≈ 0.2, Sigmoid(2.2) ≈ 0.9
+    target_cls_logit = -1.386
+    target_obj_logit = 2.2
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
-    # [Target Locking] 중앙 지점 인근의 고정된 셀을 검증 구역으로 지정 (Head 16의 중앙 근처)
-    # Head 32(336개) + Head 16(1344개) 중 총 1008번 인덱스 주변을 사용
-    FIXED_TARGET_IDX = 1008 
+    # [Target Locking] Head 16의 정중앙 지점 (Anchor 1, Row 8, Col 14)
+    # Head 32(336) + Anchor1(448) + Row8(224) + Col14 = 1022
+    FIXED_TARGET_IDX = 1022 
     
     for i in range(max_iters):
         images.requires_grad = True
         d32, d16 = model(images)
         
-        all_probs = []
-        all_objs = [] # 모니터링용
+        all_cls_logits = []
+        all_obj_logits = []
         
+        # 시그모이드를 거치지 않은 원본 로짓(Logit) 추출
         for head in [d32, d16]:
-            all_objs.append(sigmoid(head[obj_idx]).reshape(-1))
-            cls = sigmoid(head[class_idx].view(3, 5, head.shape[1], head.shape[2]))
-            all_probs.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
+            all_obj_logits.append(head[obj_idx].reshape(-1))
+            cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
+            all_cls_logits.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
             
-        objs = torch.cat(all_objs)
-        probs = torch.cat(all_probs)
+        objs_logit = torch.cat(all_obj_logits)
+        probs_logit = torch.cat(all_cls_logits)
         
-        # 2. 고정 지점의 분류 확률 벡터 추출
-        P = probs[FIXED_TARGET_IDX]
+        target_P_logit = probs_logit[FIXED_TARGET_IDX]
+        target_O_logit = objs_logit[FIXED_TARGET_IDX]
         
-        # (A) L_KL: KL Divergence
-        plus_eps = 1e-10
-        loss_kl = (P * torch.log((P + plus_eps) / (T + plus_eps))).sum()
+        # (A) 클래스 균등화 손실 (Logit L2)
+        loss_cls = ((target_P_logit - target_cls_logit) ** 2).sum()
         
-        # (B) L_L2: L2 Distance
-        loss_l2 = torch.norm(P - T, p=2)
+        # (B) 탐지 활성화 손실 (Logit L2) - 0.000 탈출용
+        loss_obj = (target_O_logit - target_obj_logit) ** 2
         
-        # (C) L_unif: -Variance
-        loss_unif = -torch.var(P)
+        # (C) 배경 억제
+        bg_logits = torch.cat([objs_logit[:FIXED_TARGET_IDX], objs_logit[FIXED_TARGET_IDX+1:]])
+        loss_bg = ((bg_logits + 10.0) ** 2).mean()
         
-        # [Strategy] 탐지 임계값(Obj)은 무시하고 분류 레이어의 그라디언트에만 집중
-        # 단, Objectness가 너무 낮아지지 않도록 최소한의 유지 항 사용 (옵션)
-        loss_obj = (objs[FIXED_TARGET_IDX] - 0.5) ** 2 
-        
-        # 최종 손실 조합 (논문 가중치 준수)
-        loss = loss_kl + 0.1 * loss_l2 + 0.1 * loss_unif + 0.1 * loss_obj
+        loss = loss_cls + 2.0 * loss_obj + 0.1 * loss_bg
         
         if (i+1) % 200 == 0:
-            status = ", ".join([f"{p.item()*100:4.1f}%" for p in P])
-            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.6f} | Obj @ Fixed: {objs[FIXED_TARGET_IDX].item():.3f} | P: [{status}]")
+            current_P = sigmoid(target_P_logit)
+            current_O = sigmoid(target_O_logit)
+            status = ", ".join([f"{p.item()*100:4.1f}%" for p in current_P])
+            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.4f} | Obj: {current_O.item():.4f} (Logit: {target_O_logit.item():.2f}) | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
@@ -102,7 +99,7 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, s
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """탐지 성공 여부와 상관없이 고정된 검증 그리드의 클래스 확률을 직접 리포팅"""
+    """정중앙 고정 그리드(1022)의 실시간 확률 상세 리포팅"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -110,9 +107,8 @@ def load_and_predict_wyze(model, save_dir):
         print("No challenge images found.")
         return
 
-    # 최적화 시 사용했던 고정 지점과 일치해야 함
-    FIXED_TARGET_IDX = 1008
-    print(f"\nEvaluating Fixed-Grid Classification (Index: {FIXED_TARGET_IDX})...")
+    FIXED_TARGET_IDX = 1022
+    print(f"\nEvaluating Fixed-Center Grid Classification (Index: {FIXED_TARGET_IDX})...")
     
     model.eval()
     obj_idx = [4, 14, 24]
@@ -134,7 +130,6 @@ def load_and_predict_wyze(model, save_dir):
             objs = torch.cat(all_objs)
             probs = torch.cat(all_probs)
             
-            # 고정된 검증 지점의 실제 클래스 확률 직접 추출
             target_probs = probs[FIXED_TARGET_IDX]
             target_obj = objs[FIXED_TARGET_IDX]
             
