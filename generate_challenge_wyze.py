@@ -110,15 +110,16 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
             
     return images.detach()
 
-def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=1000, step_size=0.01):
-    """[최종 로짓-정렬 엔진] 확률이 아닌 로짓 레벨에서 직접 20%(-1.386)를 명중시킴"""
-    # 20% 확률(0.2)에 해당하는 로짓 값: ln(0.2 / 0.8) = -1.38629
-    logit_target = -1.38629
+def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=3000, step_size=0.01):
+    """[최종 Ultimate 엔진] 기필코 20%를 맞추기 위한 지능형 기울기 마스킹 & 증폭 최적화"""
+    logit_target = -1.38629 # 20% 대응 로짓
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
+    CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
     FIXED_TARGET_IDX = 1022 
 
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
+        # 초기화: 과감하게 중간값에서 출발
         images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.05
         images = torch.clamp(images, 0, 1)
 
@@ -136,15 +137,23 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=100
         probs_logit = torch.cat(all_cls_logits)
         
         target_P_logit = probs_logit[FIXED_TARGET_IDX]
+        target_P_scores = torch.sigmoid(target_P_logit)
         
-        # [로짓 MSE 손실] 확률 공간의 기울기 소멸을 방지하기 위해 로짓 공간에서 직접 최적화
-        loss = torch.mean((target_P_logit - logit_target)**2)
+        # [지능형 동적 가중치 전략]
+        # 1. 잘나가는 클래스 (22% 초과) -> 가중치 0 (마스킹)
+        # 2. 고전하는 클래스 (18% 미만) -> 가중치 10 (증폭)
+        # 3. 적정 클래스 (18%~22%) -> 가중치 1
+        weights = torch.ones_like(target_P_scores)
+        weights = torch.where(target_P_scores > 0.22, 0.0, weights)
+        weights = torch.where(target_P_scores < 0.18, 10.0, weights)
         
-        if (i+1) % 200 == 0:
-            target_P_scores = torch.sigmoid(target_P_logit)
-            status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_scores])
+        # 가중치가 반영된 독립 로짓 MSE 손실
+        loss = (weights * (target_P_logit - logit_target)**2).sum()
+        
+        if (i+1) % 500 == 0:
+            status = ", ".join([f"{CLASS_NAMES[j]}:{p.item()*100:4.1f}%" for j, p in enumerate(target_P_scores)])
             diff = target_P_scores.max() - target_P_scores.min()
-            print(f"  [Logit-Align {i+1:04d}] Target-Gap: {diff.item()*100:.2f}% | S: [{status}]")
+            print(f"  [Ultimate {i+1:04d}] Max-Gap: {diff.item()*100:4.1f}% | {status}")
 
         model.zero_grad()
         loss.backward()
@@ -155,10 +164,12 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=100
             momentum = mu * momentum + grad
             
             with torch.no_grad():
+                # 8비트 지형 극복을 위해 일정한 강도의 Momentum Sign 업데이트 유지
                 images -= step_size * momentum.sign() 
                 images = torch.clamp(images, 0, 1)
         
-        if (i+1) % 400 == 0:
+        # 2/3 지점(2,000회) 이후부터 정밀 마무리
+        if (i+1) == 2000:
             step_size *= 0.5
             
     return images.detach()
