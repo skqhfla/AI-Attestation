@@ -148,8 +148,8 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=300
         
         current_gap = (target_P_scores.max() - target_P_scores.min()).item() * 100
         
-        # [최종 1% 안착 및 요약 출력]
-        if i > 1500 and current_gap < 1.0:
+        # [최종 3% 안착 및 요약 출력]
+        if i > 1200 and current_gap < 3.0:
             final_status = ", ".join([f"{CLASS_NAMES[j]}: {p.item()*100:4.2f}%" for j, p in enumerate(target_P_scores)])
             print(f"\n  [🎉 Goal Reached! Iter {i:04d}] Max-Gap: {current_gap:.3f}%")
             print(f"  [Final Probabilities] {final_status}\n")
@@ -256,7 +256,7 @@ def main():
                 num_generated += 1
                 print(f"Successfully generated {num_generated}/{remaining_count} images (Attempt {total_attempts})")
             else:
-                print(f"Failed to reach 1% Gap. Discarding and retrying... (Total attempts: {total_attempts})")
+                print(f"Failed to reach 3% Gap. Discarding and retrying... (Total attempts: {total_attempts})")
 
     # 4. 결과 로드 및 리포팅
     load_and_predict_wyze(model, save_dir)
