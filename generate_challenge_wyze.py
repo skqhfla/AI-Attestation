@@ -111,8 +111,9 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
     return images.detach()
 
 def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=1000, step_size=0.01):
-    """[멀티라벨 전용 검증용] 각 클래스를 독립적으로 0.2에 안착시킴 (Softmax 없음)"""
-    target_score = 0.2
+    """[최종 로짓-정렬 엔진] 확률이 아닌 로짓 레벨에서 직접 20%(-1.386)를 명중시킴"""
+    # 20% 확률(0.2)에 해당하는 로짓 값: ln(0.2 / 0.8) = -1.38629
+    logit_target = -1.38629
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     FIXED_TARGET_IDX = 1022 
 
@@ -135,14 +136,15 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=100
         probs_logit = torch.cat(all_cls_logits)
         
         target_P_logit = probs_logit[FIXED_TARGET_IDX]
-        target_P_scores = torch.sigmoid(target_P_logit)
         
-        loss = torch.mean((target_P_scores - target_score)**2)
+        # [로짓 MSE 손실] 확률 공간의 기울기 소멸을 방지하기 위해 로짓 공간에서 직접 최적화
+        loss = torch.mean((target_P_logit - logit_target)**2)
         
         if (i+1) % 200 == 0:
+            target_P_scores = torch.sigmoid(target_P_logit)
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_scores])
             diff = target_P_scores.max() - target_P_scores.min()
-            print(f"  [ML-Exp {i+1:04d}] Max-Gap: {diff.item()*100:.1f}% | S: [{status}]")
+            print(f"  [Logit-Align {i+1:04d}] Target-Gap: {diff.item()*100:.2f}% | S: [{status}]")
 
         model.zero_grad()
         loss.backward()
@@ -162,7 +164,7 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=100
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """최종 생성된 이미지를 고정 타겟 지점(1022)에서 시그모이드 점수로 리포트"""
+    """최종 생성된 이미지를 고정 타겟 지점(1022)에서 클래스 이름과 함께 리포트"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
@@ -170,6 +172,7 @@ def load_and_predict_wyze(model, save_dir):
         return
 
     FIXED_TARGET_IDX = 1022
+    CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
     print(f"\nEvaluating Multi-Label Challenges (Independent Sigmoids at Index {FIXED_TARGET_IDX})...")
     
     model.eval()
@@ -189,7 +192,7 @@ def load_and_predict_wyze(model, save_dir):
             # 멀티라벨 모델이므로 Sigmoid 점수를 출력
             scores = torch.sigmoid(torch.cat(p_logits)[FIXED_TARGET_IDX])
             
-            prob_str = ", ".join([f"C{j}:{p*100:4.1f}%" for j, p in enumerate(scores)])
+            prob_str = ", ".join([f"{CLASS_NAMES[j]}:{p*100:4.1f}%" for j, p in enumerate(scores)])
             print(f"[{i+1:03d}] {os.path.basename(img_path)} | {prob_str}")
 
 def main():
