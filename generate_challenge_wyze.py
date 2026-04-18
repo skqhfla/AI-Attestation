@@ -153,7 +153,7 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=300
             final_status = ", ".join([f"{CLASS_NAMES[j]}: {p.item()*100:4.2f}%" for j, p in enumerate(target_P_scores)])
             print(f"\n  [🎉 Goal Reached! Iter {i:04d}] Max-Gap: {current_gap:.3f}%")
             print(f"  [Final Probabilities] {final_status}\n")
-            break
+            return images.detach(), True
 
         weights = torch.ones_like(target_P_scores)
         weights = torch.where(target_P_scores < 0.15, 20.0, weights)
@@ -177,7 +177,7 @@ def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=300
                 images -= step_size * momentum.sign() 
                 images = torch.clamp(images, 0, 1)
             
-    return images.detach()
+    return images.detach(), False
 
 def load_and_predict_wyze(model, save_dir):
     """최종 생성된 이미지를 고정 타겟 지점(1022)에서 클래스 이름과 함께 리포트"""
@@ -240,18 +240,23 @@ def main():
         print(f"이미 {NUM_CHALLENGES}개의 최적화된 챌린지가 존재합니다.")
     else:
         print(f"{remaining_count}개의 최적화된 챌린지 이미지를 생성합니다...")
-        start_index = max_index + 1
-        for i in range(remaining_count):
-            # 초기 랜덤 노이즈 생성
-            img = generate_random_image()
-            # [실험] 멀티라벨 전용 최적화 함수 호출
-            optimized_img = update_image_to_wyze_multi_label(model, img)
+        num_generated = 0
+        total_attempts = 0
+        
+        while num_generated < remaining_count:
+            total_attempts += 1
+            img = torch.randn((1, 3, 256, 448), device=DEVICE) * 0.1 + 0.5
+            img = torch.clamp(img, 0, 1)
             
-            filename = f"challenge_image_{start_index + i}.png"
-            save_path = os.path.join(save_dir, filename)
-            save_image(optimized_img, save_path)
-            if (i+1) % 5 == 0:
-                print(f"Generated and Optimized {i+1}/{remaining_count} images.")
+            optimized_img, success = update_image_to_wyze_multi_label(model, img)
+            
+            if success:
+                save_path = os.path.join(save_dir, f"challenge_image_{max_index + num_generated + 1}.png")
+                vutils.save_image(optimized_img, save_path)
+                num_generated += 1
+                print(f"Successfully generated {num_generated}/{remaining_count} images (Attempt {total_attempts})")
+            else:
+                print(f"Failed to reach 1% Gap. Discarding and retrying... (Total attempts: {total_attempts})")
 
     # 4. 결과 로드 및 리포팅
     load_and_predict_wyze(model, save_dir)
