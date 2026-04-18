@@ -43,24 +43,22 @@ def save_image(tensor, filename):
     image.save(filename)
 
 def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, step_size=0.05):
-    """적응형 타겟팅과 단계적 감쇄를 사용하여 20%에 정밀 안착시키는 최종 엔진"""
+    """[최종판] 2단계 전략적 최적화: 1단계 탐지 활성화 -> 2단계 정밀 분류 조각"""
     target_cls_logit = -1.386
-    target_obj_logit = 1.6 
+    target_obj_logit_s1 = 3.0 # 1단계: 강한 탐지 유도
+    target_obj_logit_s2 = 1.6 # 2단계: 안정적 탐지 유지
     
     obj_idx = [4, 14, 24]
     class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
     
-    target_idx = None # 적응형으로 선정
+    target_idx = None
 
-    # [1. 초기화] 체크보드 시드 유지
+    # [1. 초기화] 고대비 고주파 노이즈 패치 (Seed Patch)
     with torch.no_grad():
         h_center, w_center = 8 * 16, 14 * 16
-        for hh in range(h_center-8, h_center+8):
-            for ww in range(w_center-8, w_center+8):
-                if ((hh // 4) + (ww // 4)) % 2 == 0:
-                    images[:, :, hh, ww] = 0.9
-                else:
-                    images[:, :, hh, ww] = 0.1
+        # 16x16 영역에 고주파 노이즈 주입하여 모델 커널 자극
+        noise = (torch.randn((1, 3, 16, 16), device=DEVICE) * 0.4) + 0.5
+        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = torch.clamp(noise, 0, 1)
 
     for i in range(max_iters):
         images.requires_grad = True
@@ -76,62 +74,61 @@ def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, s
         objs_logit = torch.cat(all_obj_logits)
         probs_logit = torch.cat(all_cls_logits)
         
-        # [2. 적응형 타겟팅] 100회까지 관찰 후 가장 반응이 좋은 지점 고정
-        if i < 100:
-            act_scores = torch.abs(probs_logit).sum(dim=1)
-            _, current_best = torch.max(act_scores, 0)
+        # [2. 전략적 타겟 인덱스 관리]
+        if i < 500:
+            # 1단계: 가장 탐지 반응이 빠르게 올라오는 지점을 실시간 추적
+            _, current_best = torch.max(objs_logit, 0)
             target_idx = current_best.item()
         
-        target_P_logit = probs_logit[target_idx]
         target_O_logit = objs_logit[target_idx]
+        target_P_logit = probs_logit[target_idx]
         P_actual = sigmoid(target_P_logit)
         
-        # [3. 복합 손실 함수]
-        # (A) MSE Target Loss
-        loss_mse = ((target_P_logit - target_cls_logit) ** 2).sum()
-        # (B) Variance Loss (균등성 보장)
-        loss_var = torch.var(P_actual)
-        # (C) Obj Loss
-        loss_obj = (target_O_logit - target_obj_logit) ** 2
-        # (D) BG Suppression (매우 미세하게)
-        loss_bg = (torch.clamp(objs_logit + 5.0, min=0) ** 2).mean()
+        # [3. 2단계 손실 함수 설계]
+        if i < 500:
+            # Stage 1: 탐지 활성화에만 모든 에너지 집중 (Wake-up)
+            loss = (target_O_logit - target_obj_logit_s1) ** 2
+        else:
+            # Stage 2: 탐지 상태 위에서 분산 억제 및 타겟 수렴 (Refine)
+            loss_mse = ((target_P_logit - target_cls_logit) ** 2).sum()
+            loss_var = torch.var(P_actual)
+            loss_obj = (target_O_logit - target_obj_logit_s2) ** 2
+            loss_bg = (torch.clamp(objs_logit + 5.0, min=0) ** 2).mean()
+            loss = 1.0 * loss_obj + 2.0 * loss_mse + 20.0 * loss_var + 0.001 * loss_bg
         
-        # 가중치 조절: 분포 균형(Var)에 높은 비중 부여
-        loss = 2.0 * loss_mse + 10.0 * loss_var + 1.0 * loss_obj + 0.001 * loss_bg
-        
-        if (i+1) % 400 == 0:
+        if (i+1) % 400 == 0 or (i+1) == 100:
+            stage = "S1(Wake)" if i < 500 else "S2(Carve)"
             status = ", ".join([f"{p.item()*100:4.1f}%" for p in P_actual])
             diff = P_actual.max() - P_actual.min()
-            print(f"  [Iter {i+1:04d}] Loss: {loss.item():.4f} | Obj: {sigmoid(target_O_logit).item():.3f} | Var-Gap: {diff.item()*100:.1f}% | P: [{status}]")
+            print(f"  [{stage} {i+1:04d}] Loss: {loss.item():.4f} | Obj: {sigmoid(target_O_logit).item():.3f} (L:{target_O_logit.item():.1f}) | Var-Gap: {diff.item()*100:.1f}% | P: [{status}]")
 
         model.zero_grad()
         loss.backward()
         
-        # [4. 단계적 학습률 감쇄] Annealing
-        if i < 400:
-            current_step = 0.1 # 초기 탈출
+        # [4. 단계적 학습률 감쇄]
+        if i < 500:
+            current_step = 0.1 # 초반 강력 추진
         elif i < 1200:
-            current_step = 0.05 # 접근
+            current_step = 0.05
         else:
-            current_step = 0.01 # 정밀 안착
+            current_step = 0.01 # 정밀 매끄럽게
         
         if images.grad is not None:
             with torch.no_grad():
                 images -= current_step * images.grad.sign()
                 images = torch.clamp(images, 0, 1)
             
-    # 최종 선택된 타겟 지점 정보를 이미지와 함께 관리할 수 있도록 detach 
     return images.detach()
 
 def load_and_predict_wyze(model, save_dir):
-    """최종 생성된 이미지를 각 이미지별 최적 감지 지점에서 리포팅"""
+    """이미지별 최적 감지 지점을 찾아 상세 지표 출력"""
     transform = transforms.Compose([transforms.ToTensor()])
     image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
     
     if not image_paths:
         return
 
-    print(f"\nEvaluating Final Precision Challenges (Adaptive Search)...")
+    print(f"\nEvaluating Final 2-Stage Challenges (Self-Search)...")
     
     model.eval()
     obj_idx = [4, 14, 24]
@@ -153,8 +150,8 @@ def load_and_predict_wyze(model, save_dir):
             objs = torch.cat(all_objs)
             probs = torch.cat(all_probs)
             
-            # 각 이미지에서 실제 가장 효과적으로 반응하는 지점 탐색
-            act_scores = torch.abs(probs).sum(dim=1)
+            # 실제 가장 확률이 강하게 잡힌 지점 탐색
+            act_scores = sigmoid(objs).reshape(-1)
             _, best_idx = torch.max(act_scores, 0)
             
             target_probs = probs[best_idx]
