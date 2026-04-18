@@ -39,7 +39,10 @@ def generate_random_image(batch_size=1, channels=3, height=IMAGE_SIZE[0], width=
 def save_image(tensor, filename):
     """텐서를 PNG 파일로 저장"""
     tensor = tensor.squeeze(0).detach().cpu()
-    image = def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
+    image = transforms.ToPILImage()(tensor)
+    image.save(filename)
+
+def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=1000, step_size=0.05):
     """로짓(Logit) 영역 최적화를 통해 시그모이드 포화를 방지하고 정중앙 그리드를 타격"""
     # 목표 로짓 설정: Sigmoid(-1.386) ≈ 0.2, Sigmoid(2.2) ≈ 0.9
     target_cls_logit = -1.386
