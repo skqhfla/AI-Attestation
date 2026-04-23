@@ -1,267 +1,292 @@
 #!/usr/bin/env python3
-import os
+"""
+Wyze YOLO 무결성 검증용 챌린지 생성기 (A+B)
+============================================
+
+A. 디바이스 bit-exact forward 확보
+   - classify.load_model('ste') + classify.preprocess() 를 그대로 사용
+   - 저장 포맷: 640x360x3 uint8 raw frame (.bin) — 디바이스/classify.py와 직접 호환
+
+B. Fingerprint 커버리지 확대
+   - 단일 ROI가 아닌 top-K "golden ROI" × (objectness + 5 class logits)
+   - 기준: 중립(gray) 입력에서 logit이 포화 영역 밖(|·|<6)이면서
+           목표 logit과의 거리가 가장 짧은 ROI K개 선정
+           → gradient가 살아있고, 가중치의 다양한 비트를 경유함
+
+Fingerprint target:
+   obj_logit  → 0.0     (sigmoid = 0.5)
+   cls_logit  → -1.3863 (sigmoid = 0.2; 5-class multi-label 균형점)
+"""
+
 import re
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import sys
+import json
 import numpy as np
-import torchvision.transforms as transforms
-import torchvision.utils as vutils
-from PIL import Image
+import torch
 from pathlib import Path
 
-# AI-Attestation 패키지 경로 추가
-import sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Wyze 모델 의존성은 AI-Attestation/wyze_model/ 에 vendor 되어 있음
+# (classify.py, model_torch_ste.py, model_blob, weight_blob, libstb_resize.so)
+# libstb_resize.so 는 Linux x86-64 ELF. 다른 OS 에서는 stb_image_resize.h 로 재빌드 필요.
+SCRIPT_DIR = Path(__file__).resolve().parent
+WYZE_DIR   = SCRIPT_DIR / "wyze_model"
+sys.path.insert(0, str(WYZE_DIR))
 
-from models.quan_wyze import wyze_resnet20_quan
+from classify import load_model, preprocess, load_input, CAM_H, CAM_W, CLASS_NAMES
 
-# 설정
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_NAME = 'wyze_resnet20_quan'
-IMAGE_SIZE = (256, 448) # Height, Width
-NUM_CHALLENGES = 100
-CONF_THRESHOLD = 0.25
 
-def sigmoid(x):
-    return 1.0 / (1.0 + torch.exp(-torch.clamp(x, -50, 50)))
+# preprocess() 의 bit-exact 경로가 numpy/ctypes 기반이라 CPU 에서 구동.
+# (CUDA 텐서를 섞으면 device mismatch 발생)
+DEVICE = torch.device('cpu')
 
-def generate_random_image(batch_size=1, channels=3, height=IMAGE_SIZE[0], width=IMAGE_SIZE[1]):
-    """랜덤 노이즈 이미지 생성"""
+NUM_CHALLENGES      = 100
+K_GOLDEN            = 16
+OBJ_TARGET_LOGIT    = 0.0
+CLS_TARGET_LOGIT    = -1.38629436   # logit(0.2)
+MAX_ITERS           = 2000
+CONVERGENCE_DEV     = 0.3           # max |logit - target| 기준
+VERIFY_TOLERANCE    = 1.0           # 재로딩 후 허용 편차 (bit-exact 검증은 별도)
+STEP_SIZE_INIT      = 4.0           # raw(0~255) 픽셀 단위 step
+MOMENTUM_MU         = 0.9
+STEP_DECAY_EVERY    = 500
+STEP_DECAY_FACTOR   = 0.5
+
+SAVE_DIR = SCRIPT_DIR / "data" / "challenge" / "wyze_ste_multiroi"
+SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Golden ROI 선정 (중립 입력 한 번만 forward)
+# ────────────────────────────────────────────────────────────────────────────
+
+def select_golden_rois(model, K):
+    """중립 gray(128) 입력에서 logit이 포화 없이 목표값에 가까운 ROI K개 선정.
+
+    각 ROI = (head, anchor, grid_y, grid_x) 조합.
+    score = (obj_logit - OBJ_TARGET)^2 + sum((cls_logit - CLS_TARGET)^2)
+    """
+    neutral = torch.full((1, 3, CAM_H, CAM_W), 128.0)
+    with torch.no_grad():
+        x, _ = preprocess(neutral)
+        d32, d16 = model(x.squeeze(0))
+
+    heads = [(d32, 0, 8, 14), (d16, 1, 16, 28)]
+    candidates = []
+    for head, head_idx, gh, gw in heads:
+        for a in range(3):
+            obj_ch = a * 10 + 4
+            cls_ch = [a * 10 + 5 + c for c in range(5)]
+            for gy in range(gh):
+                for gx in range(gw):
+                    obj_l = float(head[obj_ch, gy, gx])
+                    cls_l = [float(head[c, gy, gx]) for c in cls_ch]
+                    # 포화 영역(|logit|>6)은 gradient 소실로 최적화 불가
+                    if max(abs(obj_l), *(abs(l) for l in cls_l)) > 6.0:
+                        continue
+                    dist = (obj_l - OBJ_TARGET_LOGIT) ** 2 + sum(
+                        (l - CLS_TARGET_LOGIT) ** 2 for l in cls_l
+                    )
+                    candidates.append({
+                        'head_idx': head_idx,
+                        'anchor': a,
+                        'gy': gy,
+                        'gx': gx,
+                        'obj_ch': obj_ch,
+                        'cls_ch': cls_ch,
+                        'dist_to_target': dist,
+                    })
+    candidates.sort(key=lambda r: r['dist_to_target'])
+    if len(candidates) < K:
+        raise RuntimeError(
+            f"Golden ROI 후보 {len(candidates)}개 < K={K}. "
+            f"saturation 조건(|logit|<6) 완화 필요")
+    return candidates[:K]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Fingerprint loss
+# ────────────────────────────────────────────────────────────────────────────
+
+def fingerprint_loss(d32, d16, rois):
+    """K ROI × 6 logit (obj + 5 cls) 에 대한 MSE + max deviation 반환."""
+    heads = [d32, d16]
+    loss = d32.new_zeros(())
+    obj_dev_max = 0.0
+    cls_dev_max = 0.0
+
+    for r in rois:
+        head = heads[r['head_idx']]
+        gy, gx = r['gy'], r['gx']
+        obj_l = head[r['obj_ch'], gy, gx]
+        cls_l = torch.stack([head[c, gy, gx] for c in r['cls_ch']])
+
+        loss = loss + (obj_l - OBJ_TARGET_LOGIT) ** 2
+        loss = loss + ((cls_l - CLS_TARGET_LOGIT) ** 2).sum()
+
+        obj_dev_max = max(obj_dev_max, abs(obj_l.item() - OBJ_TARGET_LOGIT))
+        cls_dev_max = max(cls_dev_max,
+                          (cls_l.detach() - CLS_TARGET_LOGIT).abs().max().item())
+
+    max_dev = max(obj_dev_max, cls_dev_max)
+    return loss, max_dev
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Raw 이미지 생성 / 최적화
+# ────────────────────────────────────────────────────────────────────────────
+
+def init_raw():
+    """640x360x3, [0,255] 범위. uniform / clipped gaussian 섞어서 다양성 확보."""
     if np.random.rand() > 0.5:
-        # Uniform Noise
-        return torch.rand((batch_size, channels, height, width), device=DEVICE)
-    else:
-        # Gaussian Noise
-        base_image = torch.rand((batch_size, channels, height, width), device=DEVICE)
-        gaussian_noise = torch.randn((batch_size, channels, height, width), device=DEVICE) * 0.2
-        return torch.clamp(base_image + gaussian_noise, min=0, max=1)
+        return torch.rand((1, 3, CAM_H, CAM_W), device=DEVICE) * 255.0
+    g = torch.randn((1, 3, CAM_H, CAM_W), device=DEVICE) * 30.0 + 128.0
+    return torch.clamp(g, 0.0, 255.0)
 
-def save_image(tensor, filename):
-    """텐서를 PNG 파일로 저장"""
-    tensor = tensor.squeeze(0).detach().cpu()
-    image = transforms.ToPILImage()(tensor)
-    image.save(filename)
 
-def update_image_to_wyze_uniform(model, images, num_classes=5, max_iters=2000, step_size=0.01):
-    """[방법론 고수 + 정밀 수렴판] KL-Divergence를 유지하되 최적화 안정성 극대화"""
-    target_dist = torch.full((num_classes,), 1.0 / num_classes, device=DEVICE)
-    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
-    FIXED_TARGET_IDX = 1022 
-    T = 2.0  # 온도 스케일링: 기울기를 부드럽게 하여 양자화 계단을 극복
+def optimize_raw(model, raw, rois, challenge_idx):
+    """STE preprocess() 경유 + momentum-sign PGD.
 
-    with torch.no_grad():
-        h_center, w_center = 8 * 16, 14 * 16
-        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.02
-        images = torch.clamp(images, 0, 1)
+    gradient 는 preprocess 의 미분가능 근사를 통해 raw(640x360 uint8) 까지 전파.
+    forward 는 stb_image_resize 로 디바이스와 bit-exact.
+    """
+    momentum = torch.zeros_like(raw)
+    step_size = STEP_SIZE_INIT
 
-    momentum = torch.zeros_like(images)
-    mu = 0.9 
+    for i in range(MAX_ITERS):
+        raw = raw.detach().requires_grad_(True)
 
-    for i in range(max_iters):
-        images.requires_grad = True
-        d32, d16 = model(images)
-        
-        all_cls_logits = []
-        for head in [d32, d16]:
-            cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
-            all_cls_logits.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
-        probs_logit = torch.cat(all_cls_logits)
-        
-        # 1. 로짓 센터링: 특정 클래스 독주 방지
-        target_P_logit = probs_logit[FIXED_TARGET_IDX]
-        target_P_logit = target_P_logit - target_P_logit.mean() 
-        
-        # 2. 온도 스케일링 적용 Softmax (최적화용)
-        target_P_probs_T = F.softmax(target_P_logit / T, dim=0)
-        target_P_probs_raw = F.softmax(target_P_logit, dim=0) # 모니터링용
-        
-        # 3. 동적 가중치: 낙오된 클래스(15% 미만)에게 더 높은 학습 우선순위 부여
-        # 이는 수식을 바꾸는 것이 아니라, 기울기 전달 강도를 조절하는 최적화 기법임
-        compensation = torch.where(target_P_probs_raw < 0.15, 5.0, 1.0)
-        
-        # [BAIV 공식] KL(1.0) + L2(0.1) + Var(0.1)
-        # 온도 스케일링된 분포로 KL 계산 (안정성 확보)
-        loss_kl = F.kl_div(F.log_softmax(target_P_logit / T, dim=0), target_dist, reduction='batchmean')
-        loss_l2 = torch.norm(target_P_probs_T - target_dist, p=2)
-        loss_unif = torch.var(target_P_probs_T)
-        
-        # 동적 보상을 통한 최종 손실 구성
-        loss = (compensation * loss_kl).sum() + 0.1 * loss_l2 + 0.1 * loss_unif
-        
-        if (i+1) % 400 == 0:
-            status = ", ".join([f"{p.item()*100:4.1f}%" for p in target_P_probs_raw])
-            diff = target_P_probs_raw.max() - target_P_probs_raw.min()
-            print(f"  [BAIV-Stable {i+1:04d}] Gap: {diff.item()*100:.1f}% | P: [{status}]")
+        x_int8, _ = preprocess(raw)
+        d32, d16 = model(x_int8.squeeze(0))
+        loss, max_dev = fingerprint_loss(d32, d16, rois)
 
-        model.zero_grad()
+        if max_dev < CONVERGENCE_DEV:
+            return raw.detach(), True, i + 1, max_dev
+
         loss.backward()
-        
-        if images.grad is not None:
-            grad = images.grad
-            grad = grad / (torch.mean(torch.abs(grad)) + 1e-10)
-            momentum = mu * momentum + grad
-            
-            with torch.no_grad():
-                images -= step_size * momentum.sign() 
-                images = torch.clamp(images, 0, 1)
-        
-        if (i+1) % 500 == 0:
-            step_size *= 0.5
-            
-    return images.detach()
+        grad = raw.grad / (raw.grad.abs().mean() + 1e-10)
+        momentum = MOMENTUM_MU * momentum + grad
 
-def update_image_to_wyze_multi_label(model, images, num_classes=5, max_iters=3000, step_size=0.05):
-    """[초정밀 1% 마이크로 엔진] Max-Gap 1% 미만 달성 및 최종 결과 상세 리포트"""
-    logit_target_base = -1.38629 
-    logit_targets = torch.tensor([logit_target_base, logit_target_base + 0.1, logit_target_base, logit_target_base, logit_target_base + 0.1], device=DEVICE)
-    
-    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
-    CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
-    FIXED_TARGET_IDX = 361 
+        with torch.no_grad():
+            raw = torch.clamp(raw - step_size * momentum.sign(), 0.0, 255.0)
 
-    with torch.no_grad():
-        h_center, w_center = 8 * 16, 14 * 16
-        images[:, :, h_center-8:h_center+8, w_center-8:w_center+8] = 0.5 + torch.randn((1, 3, 16, 16), device=DEVICE) * 0.05
-        images = torch.clamp(images, 0, 1)
+        if (i + 1) % STEP_DECAY_EVERY == 0:
+            step_size *= STEP_DECAY_FACTOR
+            print(f"      [ch {challenge_idx:03d} iter {i+1:4d}] "
+                  f"loss={loss.item():8.2f}  max_dev={max_dev:5.3f}  "
+                  f"step={step_size:.3f}")
 
-    momentum = torch.zeros_like(images)
-    mu = 0.9 
+    return raw.detach(), False, MAX_ITERS, max_dev
 
-    for i in range(max_iters):
-        # [나노 스텝 스케줄러]
-        if i == 400: step_size = 0.01
-        elif i == 1000: step_size = 0.002
-        elif i == 2000: step_size = 0.0005
-        elif i == 2500: step_size = 0.0002
 
-        images.requires_grad = True
-        d32, d16 = model(images)
-        
-        all_cls_logits = []
-        for head in [d32, d16]:
-            cls = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
-            all_cls_logits.append(cls.permute(0, 2, 3, 1).reshape(-1, 5))
-        probs_logit = torch.cat(all_cls_logits)
-        
-        target_P_logit = probs_logit[FIXED_TARGET_IDX]
-        target_P_scores = torch.sigmoid(target_P_logit)
-        
-        current_gap = (target_P_scores.max() - target_P_scores.min()).item() * 100
-        
-        # [최종 3% 안착 및 요약 출력]
-        if i > 1200 and current_gap < 3.0:
-            final_status = ", ".join([f"{CLASS_NAMES[j]}: {p.item()*100:4.2f}%" for j, p in enumerate(target_P_scores)])
-            print(f"\n  [🎉 Goal Reached! Iter {i:04d}] Max-Gap: {current_gap:.3f}%")
-            print(f"  [Final Probabilities] {final_status}\n")
-            return images.detach(), True
+def save_raw_bin(raw, path):
+    """640x360x3 uint8 raw frame 으로 저장. classify.load_input() 으로 재현 가능."""
+    arr = raw.squeeze(0).detach().cpu().numpy()          # (3, 360, 640)
+    arr = arr.transpose(1, 2, 0)                         # (360, 640, 3)
+    arr_u8 = np.clip(np.round(arr), 0, 255).astype(np.uint8)
+    arr_u8.tofile(str(path))
 
-        weights = torch.ones_like(target_P_scores)
-        weights = torch.where(target_P_scores < 0.15, 20.0, weights)
-        weights = torch.where(target_P_scores > 0.25, 0.1, weights)
-        
-        loss = (weights * (target_P_logit - logit_targets)**2).sum()
-        
-        if (i+1) % 500 == 0 or i == 0:
-            status = ", ".join([f"{CLASS_NAMES[j]}:{p.item()*100:4.1f}%" for j, p in enumerate(target_P_scores)])
-            print(f"  [Optimization {i+1:04d}] Gap: {current_gap:4.2f}% | {status}")
 
-        model.zero_grad()
-        loss.backward()
-        
-        if images.grad is not None:
-            grad = images.grad
-            grad = grad / (torch.mean(torch.abs(grad)) + 1e-10)
-            momentum = mu * momentum + grad
-            
-            with torch.no_grad():
-                images -= step_size * momentum.sign() 
-                images = torch.clamp(images, 0, 1)
-            
-    return images.detach(), False
+# ────────────────────────────────────────────────────────────────────────────
+# Verification: 저장된 .bin → load_input → preprocess → model → fingerprint 확인
+# ────────────────────────────────────────────────────────────────────────────
 
-def load_and_predict_wyze(model, save_dir):
-    """최종 생성된 이미지를 고정 타겟 지점(1022)에서 클래스 이름과 함께 리포트"""
-    transform = transforms.Compose([transforms.ToTensor()])
-    image_paths = sorted([os.path.join(save_dir, img) for img in os.listdir(save_dir) if img.endswith('.png')])
-    
-    if not image_paths:
+def verify_all(model, rois):
+    print("\n=== Verification (classify.load_input → preprocess → model) ===")
+    paths = sorted(SAVE_DIR.glob("challenge_*.bin"))
+    if not paths:
+        print("  (no challenges to verify)")
         return
 
-    FIXED_TARGET_IDX = 361
-    CLASS_NAMES = ["person", "vehicle", "pet", "package", "face"]
-    print(f"\nEvaluating Golden-ROI Challenges (Index {FIXED_TARGET_IDX})...")
-    
-    model.eval()
-    class_idx = [5,6,7,8,9, 15,16,17,18,19, 25,26,27,28,29]
-    
-    with torch.no_grad():
-        for i, img_path in enumerate(image_paths):
-            img = Image.open(img_path).convert('RGB')
-            img_tensor = transform(img).unsqueeze(0).to(DEVICE)
-            d32, d16 = model(img_tensor)
-            
-            p_logits = []
-            for head in [d32, d16]:
-                p = head[class_idx].view(3, 5, head.shape[1], head.shape[2])
-                p_logits.append(p.permute(0, 2, 3, 1).reshape(-1, 5))
-            
-            # 멀티라벨 모델이므로 Sigmoid 점수를 출력
-            scores = torch.sigmoid(torch.cat(p_logits)[FIXED_TARGET_IDX])
-            
-            prob_str = ", ".join([f"{CLASS_NAMES[j]}:{p*100:4.1f}%" for j, p in enumerate(scores)])
-            print(f"[{i+1:03d}] {os.path.basename(img_path)} | {prob_str}")
+    passed, failed = 0, 0
+    worst = 0.0
+    for p in paths:
+        x_int8, _ = load_input(str(p), preprocessed=False)
+        with torch.no_grad():
+            d32, d16 = model(x_int8.squeeze(0))
+        _, max_dev = fingerprint_loss(d32, d16, rois)
+        worst = max(worst, max_dev)
+        ok = max_dev < VERIFY_TOLERANCE
+        tag = "OK  " if ok else "FAIL"
+        passed += int(ok); failed += int(not ok)
+        print(f"  [{tag}] {p.name:28s} max_dev={max_dev:.4f}")
+
+    print(f"\n  Summary: {passed}/{passed+failed} OK  (worst max_dev={worst:.4f})")
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Main
+# ────────────────────────────────────────────────────────────────────────────
 
 def main():
-    print(f"Using device: {DEVICE}")
-    
-    # 1. 모델 로드
-    print(f"Loading {MODEL_NAME}...")
-    model = wyze_resnet20_quan().to(DEVICE)
+    print(f"Device: {DEVICE}")
+    print("Loading Wyze STE model via classify.load_model('ste') ...")
+    model, model_type = load_model('ste')
+    model.to(DEVICE)
     model.eval()
+    # 모델 파라미터는 gradient 불필요 (raw 만 최적화 대상)
+    for p in model.parameters():
+        p.requires_grad_(False)
+    print(f"  model_type={model_type}  "
+          f"params={sum(p.numel() for p in model.parameters()):,}")
 
-    # 2. 저장 경로 설정
-    save_dir = os.path.join("./data/challenge", MODEL_NAME, "optimized")
-    os.makedirs(save_dir, exist_ok=True)
+    print(f"\nSelecting top {K_GOLDEN} golden ROIs (neutral gray input) ...")
+    rois = select_golden_rois(model, K=K_GOLDEN)
+    for i, r in enumerate(rois):
+        head_name = 'S32' if r['head_idx'] == 0 else 'S16'
+        print(f"  [{i:02d}] {head_name} a={r['anchor']} "
+              f"cell=({r['gy']:2d},{r['gx']:2d})  "
+              f"dist_to_target={r['dist_to_target']:.3f}")
 
-    # 3. 기존 파일 인덱싱
-    existing_files = os.listdir(save_dir)
-    pattern = re.compile(r"challenge_image_(\d+)\.png")
-    max_index = 0
-    for fname in existing_files:
-        match = pattern.match(fname)
-        if match:
-            num = int(match.group(1))
-            if num > max_index: max_index = num
-    
-    existing_count = len([f for f in existing_files if pattern.match(f)])
-    remaining_count = max(0, NUM_CHALLENGES - existing_count)
+    fingerprint_path = SAVE_DIR / "fingerprint_rois.json"
+    with open(fingerprint_path, "w") as f:
+        json.dump({
+            'K': K_GOLDEN,
+            'obj_target_logit': OBJ_TARGET_LOGIT,
+            'cls_target_logit': CLS_TARGET_LOGIT,
+            'convergence_dev': CONVERGENCE_DEV,
+            'rois': rois,
+            'class_names': CLASS_NAMES,
+        }, f, indent=2)
+    print(f"  fingerprint saved → {fingerprint_path.name}")
 
-    if remaining_count == 0:
-        print(f"이미 {NUM_CHALLENGES}개의 최적화된 챌린지가 존재합니다.")
-    else:
-        print(f"{remaining_count}개의 최적화된 챌린지 이미지를 생성합니다...")
-        num_generated = 0
-        total_attempts = 0
-        
-        while num_generated < remaining_count:
-            total_attempts += 1
-            img = torch.randn((1, 3, 256, 448), device=DEVICE) * 0.1 + 0.5
-            img = torch.clamp(img, 0, 1)
-            
-            optimized_img, success = update_image_to_wyze_multi_label(model, img)
-            
-            if success:
-                save_path = os.path.join(save_dir, f"challenge_image_{max_index + num_generated + 1}.png")
-                vutils.save_image(optimized_img, save_path)
-                num_generated += 1
-                print(f"Successfully generated {num_generated}/{remaining_count} images (Attempt {total_attempts})")
-            else:
-                print(f"Failed to reach 3% Gap. Discarding and retrying... (Total attempts: {total_attempts})")
+    # 기존 챌린지 인덱싱
+    pattern = re.compile(r"challenge_(\d+)\.bin")
+    existing = 0
+    max_idx = 0
+    for p in SAVE_DIR.iterdir():
+        m = pattern.match(p.name)
+        if m:
+            existing += 1
+            max_idx = max(max_idx, int(m.group(1)))
+    remaining = max(0, NUM_CHALLENGES - existing)
+    print(f"\nExisting: {existing}/{NUM_CHALLENGES}. Generating {remaining} more ...")
 
-    # 4. 결과 로드 및 리포팅
-    load_and_predict_wyze(model, save_dir)
-    print("\nWyze Challenge generation process finished.")
+    if remaining == 0:
+        verify_all(model, rois)
+        return
+
+    generated = 0
+    attempts = 0
+    while generated < remaining:
+        attempts += 1
+        ch_idx = max_idx + generated + 1
+        print(f"\n  ── Challenge {ch_idx:03d}  (attempt {attempts}) ──")
+        raw = init_raw()
+        optimized, success, iters, max_dev = optimize_raw(
+            model, raw, rois, challenge_idx=ch_idx
+        )
+
+        if success:
+            path = SAVE_DIR / f"challenge_{ch_idx:03d}.bin"
+            save_raw_bin(optimized, path)
+            generated += 1
+            print(f"  [OK] converged in {iters} iters, max_dev={max_dev:.4f}  → {path.name}")
+        else:
+            print(f"  [retry] did NOT converge (max_dev={max_dev:.4f}, iters={iters})")
+
+    print(f"\nGenerated {generated} challenges in {attempts} attempt(s).")
+    verify_all(model, rois)
+
 
 if __name__ == "__main__":
     main()
