@@ -60,9 +60,12 @@ SAVE_DIR.mkdir(parents=True, exist_ok=True)
 # ────────────────────────────────────────────────────────────────────────────
 
 def select_golden_rois(model, K):
-    """중립 gray(128) 입력에서 logit이 포화 없이 목표값에 가까운 ROI K개 선정.
+    """중립 gray(128) 입력에서 목표 logit과 거리(dist_to_target)가 가장 짧은 ROI K개.
 
-    각 ROI = (head, anchor, grid_y, grid_x) 조합.
+    INT8 양자화 YOLO 는 중립 입력에서 obj logit이 큰 음수 영역(-20 ~ -30)에 몰려
+    있는 경우가 많아 saturation 필터는 적용하지 않음. STE backward 가 trunc/round
+    를 우회해 identity로 전파되므로 포화 영역이어도 gradient 가 살아있음.
+
     score = (obj_logit - OBJ_TARGET)^2 + sum((cls_logit - CLS_TARGET)^2)
     """
     neutral = torch.full((1, 3, CAM_H, CAM_W), 128.0)
@@ -72,6 +75,7 @@ def select_golden_rois(model, K):
 
     heads = [(d32, 0, 8, 14), (d16, 1, 16, 28)]
     candidates = []
+    obj_stats, cls_stats = [], []
     for head, head_idx, gh, gw in heads:
         for a in range(3):
             obj_ch = a * 10 + 4
@@ -80,9 +84,8 @@ def select_golden_rois(model, K):
                 for gx in range(gw):
                     obj_l = float(head[obj_ch, gy, gx])
                     cls_l = [float(head[c, gy, gx]) for c in cls_ch]
-                    # 포화 영역(|logit|>6)은 gradient 소실로 최적화 불가
-                    if max(abs(obj_l), *(abs(l) for l in cls_l)) > 6.0:
-                        continue
+                    obj_stats.append(obj_l)
+                    cls_stats.extend(cls_l)
                     dist = (obj_l - OBJ_TARGET_LOGIT) ** 2 + sum(
                         (l - CLS_TARGET_LOGIT) ** 2 for l in cls_l
                     )
@@ -94,12 +97,19 @@ def select_golden_rois(model, K):
                         'obj_ch': obj_ch,
                         'cls_ch': cls_ch,
                         'dist_to_target': dist,
+                        'obj_logit_init': obj_l,
+                        'cls_logits_init': cls_l,
                     })
+
+    # 진단 출력: 중립 입력에서의 logit 분포
+    obj_arr = np.array(obj_stats)
+    cls_arr = np.array(cls_stats)
+    print(f"  [diag] obj_logit  min={obj_arr.min():7.2f} max={obj_arr.max():7.2f} "
+          f"mean={obj_arr.mean():7.2f}")
+    print(f"  [diag] cls_logit  min={cls_arr.min():7.2f} max={cls_arr.max():7.2f} "
+          f"mean={cls_arr.mean():7.2f}")
+
     candidates.sort(key=lambda r: r['dist_to_target'])
-    if len(candidates) < K:
-        raise RuntimeError(
-            f"Golden ROI 후보 {len(candidates)}개 < K={K}. "
-            f"saturation 조건(|logit|<6) 완화 필요")
     return candidates[:K]
 
 
