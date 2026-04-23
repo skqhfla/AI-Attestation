@@ -41,14 +41,21 @@ DEVICE = torch.device('cpu')
 
 NUM_CHALLENGES      = 100
 K_GOLDEN            = 16
-OBJ_TARGET_LOGIT    = 0.0
-CLS_TARGET_LOGIT    = -1.38629436   # logit(0.2)
-MAX_ITERS           = 2000
-CONVERGENCE_DEV     = 0.3           # max |logit - target| 기준
-VERIFY_TOLERANCE    = 1.0           # 재로딩 후 허용 편차 (bit-exact 검증은 별도)
+
+# 관찰: neutral gray 입력에서 INT8 YOLO 의 logit 분포는
+#   obj_logit  ~ [-14.8, -8.9]  (mean -11.9)
+#   cls_logit  ~ [-6.1,   1.0]  (mean -3.0)
+# Attestation 관점에서 target 값 자체는 의미 없고 (고정·재현만 되면 됨),
+# reachable 영역 내로 잡아야 수렴이 빠름. 실제 logit 분포 중앙 근처로 설정.
+OBJ_TARGET_LOGIT    = -10.0
+CLS_TARGET_LOGIT    = -3.0
+
+MAX_ITERS           = 3000
+CONVERGENCE_DEV     = 0.5           # max |logit - target| 기준
+VERIFY_TOLERANCE    = 1.0           # 재로딩 후 허용 편차
 STEP_SIZE_INIT      = 4.0           # raw(0~255) 픽셀 단위 step
 MOMENTUM_MU         = 0.9
-STEP_DECAY_EVERY    = 500
+STEP_DECAY_EVERY    = 1000
 STEP_DECAY_FACTOR   = 0.5
 
 SAVE_DIR = SCRIPT_DIR / "data" / "challenge" / "wyze_ste_multiroi"
