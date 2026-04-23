@@ -9,13 +9,20 @@ A. 디바이스 bit-exact forward 확보
 
 B. Fingerprint 커버리지 확대
    - 단일 ROI가 아닌 top-K "golden ROI" × (objectness + 5 class logits)
-   - 기준: 중립(gray) 입력에서 logit이 포화 영역 밖(|·|<6)이면서
-           목표 logit과의 거리가 가장 짧은 ROI K개 선정
-           → gradient가 살아있고, 가중치의 다양한 비트를 경유함
+   - dist_to_target 최소인 ROI K개 선정 (saturation 필터 없음)
 
-Fingerprint target:
-   obj_logit  → 0.0     (sigmoid = 0.5)
-   cls_logit  → -1.3863 (sigmoid = 0.2; 5-class multi-label 균형점)
+Per-challenge fingerprint (attestation 표준 관행):
+   - Optimization 은 global target (obj=-10, cls=-3) 을 쫓지만 엄격히 도달 요구 X
+   - 각 challenge 의 best-so-far state 저장 + 그 때의 실제 logit 값을
+     challenge_NNN.json 에 기록
+   - Verifier 는 .bin 재로딩 → forward → .json 의 logit 과 비교
+     (round-trip bit-exact 기대, max_dev ≈ 0)
+
+출력 파일:
+   data/challenge/wyze_ste_multiroi/
+     fingerprint_rois.json       — 전체 공통: 선정된 ROI 위치/채널
+     challenge_NNN.bin           — 640x360x3 uint8 raw frame
+     challenge_NNN.json          — 해당 challenge 의 observed logit 값
 """
 
 import re
@@ -51,13 +58,14 @@ OBJ_TARGET_LOGIT    = -10.0
 CLS_TARGET_LOGIT    = -3.0
 
 MAX_ITERS           = 2000
-CONVERGENCE_DEV     = 0.5           # max |logit - target| 기준
-VERIFY_TOLERANCE    = 1.0           # 재로딩 후 허용 편차
+CONVERGENCE_DEV     = 0.5           # quality indicator. 못 넘어도 best-so-far 저장.
+VERIFY_TOLERANCE    = 0.5           # .bin round-trip 재현성 (bit-exact 기대)
 
-# Adam on raw pixels(0~255).
-# sign-PGD는 L∞ bound 용이라 MSE loss 의 미세 조정에서 진동. Adam 의 2차 모멘트
-# 스케일링으로 수렴 근처 자동 감속 → 안정적으로 local min 도달.
-ADAM_LR             = 1.0
+# Adam on raw pixels(0~255). lr=1.0 은 raw pixel 스케일에 과도해 수렴 근처 진동.
+# lr=0.3 + StepLR 로 1000 iter 후 감속 → 안정적 수렴.
+ADAM_LR             = 0.3
+ADAM_LR_DECAY_AT    = 1000
+ADAM_LR_DECAY_FACTOR = 0.3
 LOG_EVERY           = 250
 
 SAVE_DIR = SCRIPT_DIR / "data" / "challenge" / "wyze_ste_multiroi"
@@ -150,6 +158,30 @@ def fingerprint_loss(d32, d16, rois):
     return loss, max_dev
 
 
+def extract_roi_logits(d32, d16, rois):
+    """각 ROI 에서 obj(1) + cls(5) logit 추출. Python 리스트로 반환 (JSON 직렬화용)."""
+    heads = [d32, d16]
+    out = []
+    for r in rois:
+        head = heads[r['head_idx']]
+        gy, gx = r['gy'], r['gx']
+        out.append({
+            'obj': float(head[r['obj_ch'], gy, gx]),
+            'cls': [float(head[c, gy, gx]) for c in r['cls_ch']],
+        })
+    return out
+
+
+def max_dev_vs_stored(current, stored):
+    """current(raw 재로딩 후 forward) 와 저장된 per-challenge fingerprint 의 최대 편차."""
+    md = 0.0
+    for c, s in zip(current, stored):
+        md = max(md, abs(c['obj'] - s['obj']))
+        for cc, ss in zip(c['cls'], s['cls']):
+            md = max(md, abs(cc - ss))
+    return md
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Raw 이미지 생성 / 최적화
 # ────────────────────────────────────────────────────────────────────────────
@@ -163,40 +195,57 @@ def init_raw():
 
 
 def optimize_raw(model, raw, rois, challenge_idx):
-    """Adam + gradient descent on raw pixels (0~255). Clamp to [0,255] per step.
+    """Adam + StepLR scheduler. Best-so-far state 추적 → 진동해도 유실 없음.
 
-    gradient 는 preprocess 의 미분가능 근사를 통해 raw(640x360 uint8) 까지 전파.
-    forward 는 stb_image_resize 로 디바이스와 bit-exact.
-    Adam 의 2차 모멘트 스케일링으로 수렴 근처에서 자동 감속 (sign-PGD 진동 회피).
+    반환: {'raw': best_raw, 'logits': best_logits, 'max_dev': best_max_dev,
+           'converged': bool, 'iters': int}
     """
     raw = raw.detach().clone().requires_grad_(True)
     optimizer = torch.optim.Adam([raw], lr=ADAM_LR)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=ADAM_LR_DECAY_AT, gamma=ADAM_LR_DECAY_FACTOR
+    )
 
-    last_max_dev = float('inf')
+    best = {
+        'raw': raw.detach().clone(),
+        'logits': None,
+        'max_dev': float('inf'),
+        'iters': 0,
+    }
+
     for i in range(MAX_ITERS):
         optimizer.zero_grad()
 
         x_int8, _ = preprocess(raw)
         d32, d16 = model(x_int8.squeeze(0))
         loss, max_dev = fingerprint_loss(d32, d16, rois)
-        last_max_dev = max_dev
+
+        # best-so-far 갱신
+        if max_dev < best['max_dev']:
+            best['max_dev'] = max_dev
+            best['raw'] = raw.detach().clone()
+            best['logits'] = extract_roi_logits(d32, d16, rois)
+            best['iters'] = i + 1
 
         if max_dev < CONVERGENCE_DEV:
-            return raw.detach(), True, i + 1, max_dev
+            best['converged'] = True
+            return best
 
         loss.backward()
         optimizer.step()
+        scheduler.step()
 
         with torch.no_grad():
-            # 방어: sRGB singularity 또는 수치 이슈로 NaN/Inf 발생 시 복구
             raw.nan_to_num_(nan=128.0, posinf=255.0, neginf=0.0)
             raw.clamp_(0.0, 255.0)
 
         if (i + 1) % LOG_EVERY == 0:
             print(f"      [ch {challenge_idx:03d} iter {i+1:4d}] "
-                  f"loss={loss.item():8.2f}  max_dev={max_dev:5.3f}")
+                  f"loss={loss.item():8.2f}  max_dev={max_dev:5.3f}  "
+                  f"best={best['max_dev']:5.3f}")
 
-    return raw.detach(), False, MAX_ITERS, last_max_dev
+    best['converged'] = False
+    return best
 
 
 def save_raw_bin(raw, path):
@@ -208,31 +257,70 @@ def save_raw_bin(raw, path):
     arr_u8.tofile(str(path))
 
 
+def save_challenge(best, ch_idx):
+    """.bin (raw image) + .json (per-challenge fingerprint) 저장.
+
+    .json 은 해당 challenge 가 실제로 만들어낸 logit 값을 기록한다. Verifier 는
+    이 값과 재로딩 후 forward 결과를 비교해 bit-flip 감지.
+    """
+    bin_path  = SAVE_DIR / f"challenge_{ch_idx:03d}.bin"
+    json_path = SAVE_DIR / f"challenge_{ch_idx:03d}.json"
+
+    save_raw_bin(best['raw'], bin_path)
+    with open(json_path, 'w') as f:
+        json.dump({
+            'challenge_idx': ch_idx,
+            'converged': best['converged'],
+            'max_dev_vs_global_target': best['max_dev'],
+            'iters_to_best': best['iters'],
+            'rois_logits': best['logits'],  # list of {obj, cls[5]} per golden ROI
+        }, f, indent=2)
+    return bin_path
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Verification: 저장된 .bin → load_input → preprocess → model → fingerprint 확인
 # ────────────────────────────────────────────────────────────────────────────
 
 def verify_all(model, rois):
-    print("\n=== Verification (classify.load_input → preprocess → model) ===")
+    """Per-challenge .json 과 재로딩 forward 결과를 비교.
+
+    round-trip 이 bit-exact 라면 max_dev ≈ 0. VERIFY_TOLERANCE 를 넘으면
+    저장/로딩 과정에서 손실 발생 or 모델 가중치 변경 의심.
+    """
+    print("\n=== Verification (reload .bin → forward → compare with .json) ===")
     paths = sorted(SAVE_DIR.glob("challenge_*.bin"))
     if not paths:
         print("  (no challenges to verify)")
         return
 
-    passed, failed = 0, 0
+    passed, failed, skipped = 0, 0, 0
     worst = 0.0
     for p in paths:
+        json_path = p.with_suffix('.json')
+        if not json_path.exists():
+            print(f"  [SKIP] {p.name}: per-challenge fingerprint .json 없음")
+            skipped += 1
+            continue
+
         x_int8, _ = load_input(str(p), preprocessed=False)
         with torch.no_grad():
             d32, d16 = model(x_int8.squeeze(0))
-        _, max_dev = fingerprint_loss(d32, d16, rois)
-        worst = max(worst, max_dev)
-        ok = max_dev < VERIFY_TOLERANCE
+        current = extract_roi_logits(d32, d16, rois)
+
+        with open(json_path) as f:
+            stored = json.load(f)['rois_logits']
+
+        md = max_dev_vs_stored(current, stored)
+        worst = max(worst, md)
+        ok = md < VERIFY_TOLERANCE
         tag = "OK  " if ok else "FAIL"
         passed += int(ok); failed += int(not ok)
-        print(f"  [{tag}] {p.name:28s} max_dev={max_dev:.4f}")
+        print(f"  [{tag}] {p.name:28s} round-trip max_dev={md:.6f}")
 
-    print(f"\n  Summary: {passed}/{passed+failed} OK  (worst max_dev={worst:.4f})")
+    total = passed + failed
+    print(f"\n  Summary: {passed}/{total} OK  "
+          f"(worst={worst:.6f}, skipped={skipped})")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -287,26 +375,28 @@ def main():
         verify_all(model, rois)
         return
 
+    # 1 attempt per challenge. best-so-far 를 항상 저장 (retry 루프 제거).
+    # per-challenge fingerprint 가 실제 observed logit 을 기록하므로, target 에
+    # 정확히 도달 못 해도 attestation 목적상 문제 없음.
     generated = 0
-    attempts = 0
-    while generated < remaining:
-        attempts += 1
-        ch_idx = max_idx + generated + 1
-        print(f"\n  ── Challenge {ch_idx:03d}  (attempt {attempts}) ──")
+    below_threshold = 0
+    for step in range(remaining):
+        ch_idx = max_idx + step + 1
+        print(f"\n  ── Challenge {ch_idx:03d} ──")
         raw = init_raw()
-        optimized, success, iters, max_dev = optimize_raw(
-            model, raw, rois, challenge_idx=ch_idx
-        )
+        best = optimize_raw(model, raw, rois, challenge_idx=ch_idx)
 
-        if success:
-            path = SAVE_DIR / f"challenge_{ch_idx:03d}.bin"
-            save_raw_bin(optimized, path)
-            generated += 1
-            print(f"  [OK] converged in {iters} iters, max_dev={max_dev:.4f}  → {path.name}")
+        path = save_challenge(best, ch_idx)
+        generated += 1
+        if best['converged']:
+            below_threshold += 1
+            tag = "OK"
         else:
-            print(f"  [retry] did NOT converge (max_dev={max_dev:.4f}, iters={iters})")
+            tag = "BEST"
+        print(f"  [{tag}] iters={best['iters']:4d}  max_dev={best['max_dev']:.4f}  → {path.name}")
 
-    print(f"\nGenerated {generated} challenges in {attempts} attempt(s).")
+    print(f"\nGenerated {generated} challenges. "
+          f"Target-converged: {below_threshold}/{generated}.")
     verify_all(model, rois)
 
 
