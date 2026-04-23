@@ -50,13 +50,15 @@ K_GOLDEN            = 16
 OBJ_TARGET_LOGIT    = -10.0
 CLS_TARGET_LOGIT    = -3.0
 
-MAX_ITERS           = 3000
+MAX_ITERS           = 2000
 CONVERGENCE_DEV     = 0.5           # max |logit - target| 기준
 VERIFY_TOLERANCE    = 1.0           # 재로딩 후 허용 편차
-STEP_SIZE_INIT      = 4.0           # raw(0~255) 픽셀 단위 step
-MOMENTUM_MU         = 0.9
-STEP_DECAY_EVERY    = 1000
-STEP_DECAY_FACTOR   = 0.5
+
+# Adam on raw pixels(0~255).
+# sign-PGD는 L∞ bound 용이라 MSE loss 의 미세 조정에서 진동. Adam 의 2차 모멘트
+# 스케일링으로 수렴 근처 자동 감속 → 안정적으로 local min 도달.
+ADAM_LR             = 1.0
+LOG_EVERY           = 250
 
 SAVE_DIR = SCRIPT_DIR / "data" / "challenge" / "wyze_ste_multiroi"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -161,38 +163,38 @@ def init_raw():
 
 
 def optimize_raw(model, raw, rois, challenge_idx):
-    """STE preprocess() 경유 + momentum-sign PGD.
+    """Adam + gradient descent on raw pixels (0~255). Clamp to [0,255] per step.
 
     gradient 는 preprocess 의 미분가능 근사를 통해 raw(640x360 uint8) 까지 전파.
     forward 는 stb_image_resize 로 디바이스와 bit-exact.
+    Adam 의 2차 모멘트 스케일링으로 수렴 근처에서 자동 감속 (sign-PGD 진동 회피).
     """
-    momentum = torch.zeros_like(raw)
-    step_size = STEP_SIZE_INIT
+    raw = raw.detach().clone().requires_grad_(True)
+    optimizer = torch.optim.Adam([raw], lr=ADAM_LR)
 
+    last_max_dev = float('inf')
     for i in range(MAX_ITERS):
-        raw = raw.detach().requires_grad_(True)
+        optimizer.zero_grad()
 
         x_int8, _ = preprocess(raw)
         d32, d16 = model(x_int8.squeeze(0))
         loss, max_dev = fingerprint_loss(d32, d16, rois)
+        last_max_dev = max_dev
 
         if max_dev < CONVERGENCE_DEV:
             return raw.detach(), True, i + 1, max_dev
 
         loss.backward()
-        grad = raw.grad / (raw.grad.abs().mean() + 1e-10)
-        momentum = MOMENTUM_MU * momentum + grad
+        optimizer.step()
 
         with torch.no_grad():
-            raw = torch.clamp(raw - step_size * momentum.sign(), 0.0, 255.0)
+            raw.clamp_(0.0, 255.0)
 
-        if (i + 1) % STEP_DECAY_EVERY == 0:
-            step_size *= STEP_DECAY_FACTOR
+        if (i + 1) % LOG_EVERY == 0:
             print(f"      [ch {challenge_idx:03d} iter {i+1:4d}] "
-                  f"loss={loss.item():8.2f}  max_dev={max_dev:5.3f}  "
-                  f"step={step_size:.3f}")
+                  f"loss={loss.item():8.2f}  max_dev={max_dev:5.3f}")
 
-    return raw.detach(), False, MAX_ITERS, max_dev
+    return raw.detach(), False, MAX_ITERS, last_max_dev
 
 
 def save_raw_bin(raw, path):
