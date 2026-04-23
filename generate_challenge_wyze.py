@@ -188,6 +188,8 @@ def optimize_raw(model, raw, rois, challenge_idx):
         optimizer.step()
 
         with torch.no_grad():
+            # 방어: sRGB singularity 또는 수치 이슈로 NaN/Inf 발생 시 복구
+            raw.nan_to_num_(nan=128.0, posinf=255.0, neginf=0.0)
             raw.clamp_(0.0, 255.0)
 
         if (i + 1) % LOG_EVERY == 0:
@@ -201,6 +203,7 @@ def save_raw_bin(raw, path):
     """640x360x3 uint8 raw frame 으로 저장. classify.load_input() 으로 재현 가능."""
     arr = raw.squeeze(0).detach().cpu().numpy()          # (3, 360, 640)
     arr = arr.transpose(1, 2, 0)                         # (360, 640, 3)
+    arr = np.nan_to_num(arr, nan=128.0, posinf=255.0, neginf=0.0)
     arr_u8 = np.clip(np.round(arr), 0, 255).astype(np.uint8)
     arr_u8.tofile(str(path))
 

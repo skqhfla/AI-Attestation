@@ -170,9 +170,11 @@ def preprocess(raw_rgb):
                          ((x_norm + 0.055) / 1.055) ** 2.4)
     resized = F.interpolate(linear, size=(MODEL_H, MODEL_W),
                             mode='bilinear', align_corners=False)
+    # clamp(min=1e-8): resized=0 일 때 pow(1/2.4)의 backward gradient 가 ∞ 되는
+    # singularity 제거. forward 차이는 uint8 round 아래 수준이라 무시 가능.
     srgb = torch.where(resized <= 0.0031308,
                        resized * 12.92,
-                       1.055 * resized.clamp(min=0).pow(1.0 / 2.4) - 0.055)
+                       1.055 * resized.clamp(min=1e-8).pow(1.0 / 2.4) - 0.055)
     approx = srgb * 255.0 - 128.0
 
     # --- bit-exact 경로 (forward용) ---
