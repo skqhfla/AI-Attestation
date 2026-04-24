@@ -146,14 +146,29 @@ def perform_attack(attacker, model, train_loader, val_loader, N_iter, log, save_
         # 4. 성능 재측정 (log 객체 전달)
         current_acc, current_conf, _, _ = validate(val_loader, model, attacker.criterion, log, device)
         
-        # 5. 체크포인트 저장 (10비트 단위)
+        # 5. 체크포인트 저장
+        #    - 1 ~ 9 비트 구간: 매 비트마다 저장 (감지 임계 실험용)
+        #    - 10 비트 이상   : 매 10 비트 경계에서 저장 (기존 동작 유지)
         current_bits = attacker.bit_counter
-        if current_bits // 10 > last_saved_bits // 10:
-            checkpoint_bits = (current_bits // 10) * 10
-            save_name = f"wyze_bfa_bit{checkpoint_bits}_conf{current_conf:.4f}.pth"
+        should_save = False
+        checkpoint_tag = current_bits
+        if current_bits != last_saved_bits and current_bits >= 1:
+            if current_bits <= 9:
+                should_save = True
+                checkpoint_tag = current_bits
+            elif current_bits // 10 > last_saved_bits // 10:
+                should_save = True
+                checkpoint_tag = (current_bits // 10) * 10
+
+        if should_save:
+            save_name = f"wyze_bfa_bit{checkpoint_tag}_conf{current_conf:.4f}.pth"
             save_path_ckpt = os.path.join(weight_save_dir, save_name)
             torch.save(model.state_dict(), save_path_ckpt)
-            print_log(f"\n[Checkpoint] Saved model at {current_bits} bits (Threshold: {checkpoint_bits}). Avg Conf: {current_conf:.4f}", log)
+            print_log(
+                f"\n[Checkpoint] Saved model at {current_bits} bits "
+                f"(tag: {checkpoint_tag}). Avg Conf: {current_conf:.4f}",
+                log,
+            )
             last_saved_bits = current_bits
         
         acc_drop = last_acc - current_acc
