@@ -61,3 +61,8 @@ attestation/results/
 attestation/data/
 attestation/checkpoints/
 models/pytorch-image-models/
+
+
+# local-only notes (not for remote)
+
+REPORT_wyze_challenge.md
