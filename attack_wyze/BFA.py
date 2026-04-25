@@ -98,10 +98,10 @@ class BFA(object):
 
     def progressive_bit_search(self, model, data, target):
         model.eval()
-   
+
         output = model(data)
         self.loss = self.criterion(output, target)
-        
+
         # Zero gradients
         for name in self.module_list:
             m = dict(model.named_modules())[name]
@@ -111,20 +111,24 @@ class BFA(object):
         self.loss.backward()
         self.loss_max = self.loss.item()
 
-        # Search
-        while self.loss_max <= self.loss.item():
-            self.n_bits2flip += 1
-            for name in self.module_list:
-                module = dict(model.named_modules())[name]
-                clean_weight = module.weight.data.detach().clone()
-                attack_weight = self.flip_bit(module)
-                module.weight.data = attack_weight
-                output = model(data)
-                self.loss_dict[name] = self.criterion(output, target).item()
-                module.weight.data = clean_weight
-     
-            max_loss_module = max(self.loss_dict.items(), key=operator.itemgetter(1))[0]
-            self.loss_max = self.loss_dict[max_loss_module]
+        # Single-bit step:
+        # 원본 ICCV-2019 BFA 는 loss 가 실제로 증가할 때까지 동시에 여러 비트를 flip
+        # 하지만, attestation 실험에서는 "n 비트 flip 시점의 모델" 을 1 비트 단위로
+        # 모두 관찰하고 싶기 때문에 매 호출에 정확히 1 비트만 flip 하도록 고정.
+        # 한 비트로 loss 가 충분히 안 올라도 다음 호출에서 누적되며 자연히 진행됨.
+        self.n_bits2flip = 1
+        self.loss_dict = {}
+        for name in self.module_list:
+            module = dict(model.named_modules())[name]
+            clean_weight = module.weight.data.detach().clone()
+            attack_weight = self.flip_bit(module)
+            module.weight.data = attack_weight
+            output = model(data)
+            self.loss_dict[name] = self.criterion(output, target).item()
+            module.weight.data = clean_weight
+
+        max_loss_module = max(self.loss_dict.items(), key=operator.itemgetter(1))[0]
+        self.loss_max = self.loss_dict[max_loss_module]
 
         # Apply the best flip
         attack_log = []
