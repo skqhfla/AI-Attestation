@@ -62,6 +62,37 @@ def extract_roi_logits(d32, d16, rois):
     return out
 
 
+def extract_roi_topk(d32, d16, rois):
+    """BAIV-style: 각 ROI 의 5 cls 채널을 내림차순 정렬한 class index list."""
+    heads = [d32, d16]
+    out = []
+    for r in rois:
+        head = heads[r['head_idx']]
+        gy, gx = r['gy'], r['gx']
+        scores = [(float(head[c, gy, gx].detach()), i) for i, c in enumerate(r['cls_ch'])]
+        scores.sort(key=lambda x: (-x[0], x[1]))
+        out.append([i for _, i in scores])
+    return out
+
+
+def topk_from_logits(stored_fp):
+    """옛 fingerprint (.json 에 'rois_topk' 가 없는 경우) 호환:
+    stored_fp = [{'obj':..., 'cls':[5 floats]}, ...] → ROI 마다 length-5 ranking.
+    """
+    out = []
+    for s in stored_fp:
+        scores = [(s['cls'][i], i) for i in range(len(s['cls']))]
+        scores.sort(key=lambda x: (-x[0], x[1]))
+        out.append([i for _, i in scores])
+    return out
+
+
+def topk_mismatch(current_topk, stored_topk, k):
+    """K 위까지의 prefix 가 다른 ROI 의 개수 (0 ~ len(rois))."""
+    return sum(1 for cur, sto in zip(current_topk, stored_topk)
+               if cur[:k] != sto[:k])
+
+
 def max_dev_vs_stored(current, stored):
     md = 0.0
     for c, s in zip(current, stored):
@@ -76,7 +107,13 @@ def max_dev_vs_stored(current, stored):
 # ────────────────────────────────────────────────────────────────────────────
 
 def evaluate(model, rois, save_dir, verbose=False):
-    """모든 .bin 을 돌려 per-challenge 결과 반환."""
+    """모든 .bin 을 돌려 per-challenge 결과 반환.
+
+    저장 지표:
+      - att_max_dev   : raw logit 편차 (기존, logit 노출 가정 위협 모델)
+      - topk{1,2,3}_mis: BAIV-style Top-K class index mismatch (ROI 단위)
+      - any_topk_mis  : k=5 prefix (=전체 5 위 순서) 불일치 ROI 수
+    """
     results = []
     paths = sorted(save_dir.glob("challenge_*.bin"))
     for bin_path in paths:
@@ -86,15 +123,24 @@ def evaluate(model, rois, save_dir, verbose=False):
                 print(f"  [SKIP] {bin_path.name}: no .json")
             continue
         with open(json_path) as f:
-            stored_fp = json.load(f)['rois_logits']
+            stored = json.load(f)
+        stored_fp = stored['rois_logits']
+        stored_topk = stored.get('rois_topk') or topk_from_logits(stored_fp)
 
         x_int8, _ = load_input(str(bin_path), preprocessed=False)
         with torch.no_grad():
             d32, d16 = model(x_int8.squeeze(0))
 
-        # Attestation fingerprint deviation
+        # Attestation fingerprint deviation (raw logit 기반, 기존 지표)
         current = extract_roi_logits(d32, d16, rois)
         att = max_dev_vs_stored(current, stored_fp)
+
+        # BAIV-style Top-K matching (per-ROI class index ordering)
+        current_topk = extract_roi_topk(d32, d16, rois)
+        mis_k1 = topk_mismatch(current_topk, stored_topk, 1)
+        mis_k2 = topk_mismatch(current_topk, stored_topk, 2)
+        mis_k3 = topk_mismatch(current_topk, stored_topk, 3)
+        any_mis = topk_mismatch(current_topk, stored_topk, 5)  # 5 = 전체 순서
 
         # Classical YOLO detection
         d32_np = d32.cpu().numpy()
@@ -109,14 +155,21 @@ def evaluate(model, rois, save_dir, verbose=False):
         results.append({
             'bin': bin_path.name,
             'att_max_dev': float(att),
+            'topk1_mis':   int(mis_k1),
+            'topk2_mis':   int(mis_k2),
+            'topk3_mis':   int(mis_k3),
+            'any_topk_mis': int(any_mis),
+            'num_rois':    len(rois),
             'num_detections': len(dets),
             'max_conf': float(max((d['confidence'] for d in dets), default=0.0)),
             'class_counts': cls_counts,
         })
 
         if verbose:
-            tag = "OK  " if att < ATTEST_THRESHOLD else "FAIL"
-            print(f"  [{tag}] {bin_path.name}  att_max_dev={att:.4f}  "
+            tag_a = "OK" if att       < ATTEST_THRESHOLD else "FAIL"
+            tag_t = "OK" if mis_k1 == 0                  else "FAIL"
+            print(f"  [att:{tag_a:4s} top1:{tag_t:4s}] {bin_path.name}  "
+                  f"att={att:.4f}  top1_mis={mis_k1:2d}/{len(rois)}  "
                   f"dets={len(dets):2d}  max_conf={results[-1]['max_conf']:.4f}")
     return results
 
@@ -130,13 +183,33 @@ def summarize(results, label=""):
     cc = np.array([r['class_counts']    for r in results]).sum(axis=0)
     passed = int((ad < ATTEST_THRESHOLD).sum())
 
+    # Top-K (BAIV-style)
+    t1 = np.array([r.get('topk1_mis', 0)    for r in results])
+    t2 = np.array([r.get('topk2_mis', 0)    for r in results])
+    t3 = np.array([r.get('topk3_mis', 0)    for r in results])
+    ta = np.array([r.get('any_topk_mis', 0) for r in results])
+    n_rois = results[0].get('num_rois', 16) if results else 16
+    det_k1 = int((t1 > 0).sum())
+    det_k2 = int((t2 > 0).sum())
+    det_k3 = int((t3 > 0).sum())
+    det_any = int((ta > 0).sum())
+
     print(f"\n{'='*64}")
     print(f"{label or 'Results'}")
     print(f"{'='*64}")
     print(f"Challenges evaluated: {len(results)}")
-    print(f"\nATTESTATION (stored fingerprint 대비 현재 forward 편차):")
+    print(f"\nATTESTATION (raw logit 편차, stored fingerprint 대비):")
     print(f"  passed (<{ATTEST_THRESHOLD}): {passed}/{len(results)}")
     print(f"  att_max_dev   mean={ad.mean():.4f}   max={ad.max():.4f}   min={ad.min():.4f}")
+    print(f"\nTOP-K MATCHING (BAIV-style, per-ROI class index ordering):")
+    print(f"  detected (any-ROI Top-1 mismatch): {det_k1}/{len(results)}  "
+          f"(평균 mismatched ROIs = {t1.mean():.2f}/{n_rois})")
+    print(f"  detected (any-ROI Top-2 mismatch): {det_k2}/{len(results)}  "
+          f"(평균 {t2.mean():.2f}/{n_rois})")
+    print(f"  detected (any-ROI Top-3 mismatch): {det_k3}/{len(results)}  "
+          f"(평균 {t3.mean():.2f}/{n_rois})")
+    print(f"  detected (any-ROI full ordering mismatch): {det_any}/{len(results)}  "
+          f"(평균 {ta.mean():.2f}/{n_rois})")
     print(f"\nDETECTION (decode + NMS):")
     print(f"  #detections/challenge  mean={nd.mean():.2f}  max={nd.max()}  min={nd.min()}")
     print(f"  max_confidence         mean={mc.mean():.4f}  max={mc.max():.4f}")
@@ -155,34 +228,46 @@ def diff_mode(pre_path, post_path):
     pre_map  = {r['bin']: r for r in pre['results']}
     post_map = {r['bin']: r for r in post['results']}
 
-    print(f"\n{'='*96}")
+    print(f"\n{'='*108}")
     print(f"DIFF: pre={pre['weights']}  →  post={post['weights']}")
-    print(f"{'='*96}")
+    print(f"{'='*108}")
     print(f"{'challenge':<25} {'pre_att':>9} {'post_att':>9} {'Δatt':>10} "
-          f"{'pre_conf':>9} {'post_conf':>9} {'Δdets':>7}")
-    print(f"{'-'*96}")
+          f"{'top1':>5} {'top3':>5} {'pre_conf':>9} {'post_conf':>9} {'Δdets':>7}")
+    print(f"{'-'*108}")
 
     rows = []
     for name in sorted(pre_map.keys() & post_map.keys()):
         p, q = pre_map[name], post_map[name]
         dad = q['att_max_dev'] - p['att_max_dev']
         ddt = q['num_detections'] - p['num_detections']
-        flag = " !!" if dad > 0.1 else ""
+        t1  = q.get('topk1_mis', 0)
+        t3  = q.get('topk3_mis', 0)
+        flag = " !!" if (dad > 0.1 or t1 > 0) else ""
         print(f"{name:<25} {p['att_max_dev']:>9.4f} {q['att_max_dev']:>9.4f} "
-              f"{dad:>+10.4f} {p['max_conf']:>9.4f} {q['max_conf']:>9.4f} "
+              f"{dad:>+10.4f} {t1:>5d} {t3:>5d} "
+              f"{p['max_conf']:>9.4f} {q['max_conf']:>9.4f} "
               f"{ddt:>+7}{flag}")
-        rows.append((dad, ddt, p['max_conf'] - q['max_conf']))
+        rows.append((dad, ddt, p['max_conf'] - q['max_conf'], t1, t3))
 
     da   = np.array([r[0] for r in rows])
     dnd  = np.array([r[1] for r in rows])
     dmc  = np.array([r[2] for r in rows])
-    detected = int((da > 0.1).sum())
+    pt1  = np.array([r[3] for r in rows])
+    pt3  = np.array([r[4] for r in rows])
+    detected_att  = int((da > 0.1).sum())
+    detected_top1 = int((pt1 > 0).sum())
+    detected_top3 = int((pt3 > 0).sum())
 
-    print(f"\n{'─'*64}")
-    print(f"ATTESTATION deviation (post − pre):")
-    print(f"  mean={da.mean():+.4f}   max={da.max():+.4f}   min={da.min():+.4f}")
-    print(f"  attested (Δatt > 0.1): {detected}/{len(rows)}")
-    print(f"DETECTION change (post − pre):")
+    print(f"\n{'─'*72}")
+    print(f"ATTESTATION (raw logit 기반):")
+    print(f"  Δatt   mean={da.mean():+.4f}   max={da.max():+.4f}   min={da.min():+.4f}")
+    print(f"  attested (Δatt > 0.1): {detected_att}/{len(rows)}")
+    print(f"\nTOP-K MATCHING (BAIV-style, post 의 ROI mismatch 수):")
+    print(f"  detected (Top-1 any mismatch): {detected_top1}/{len(rows)}  "
+          f"(post 평균 {pt1.mean():.2f} ROI mismatch)")
+    print(f"  detected (Top-3 any mismatch): {detected_top3}/{len(rows)}  "
+          f"(post 평균 {pt3.mean():.2f} ROI mismatch)")
+    print(f"\nDETECTION change (post − pre):")
     print(f"  Δ#detections   mean={dnd.mean():+.2f}  max={dnd.max():+d}  min={dnd.min():+d}")
     print(f"  Δmax_conf (pre − post)  mean={dmc.mean():+.4f}")
 

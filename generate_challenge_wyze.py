@@ -172,6 +172,26 @@ def extract_roi_logits(d32, d16, rois):
     return out
 
 
+def extract_roi_topk(d32, d16, rois):
+    """각 ROI 의 5 cls 채널을 내림차순으로 정렬한 class index 리스트.
+
+    BAIV (main.tex) 식 Top-K 매칭 검증용. 검증자에게 logit 값 자체는 노출하지 않고
+    "어떤 클래스가 1·2·3 위였는가" 만 보내는 위협 모델에 대응.
+    동률은 작은 index 가 우선 (deterministic) — verifier 와 prover 가 동일 규칙을
+    써야 일치 비교가 의미 있음.
+    반환: ROI 마다 length-5 list, 길이는 N_CLASSES 고정.
+    """
+    heads = [d32, d16]
+    out = []
+    for r in rois:
+        head = heads[r['head_idx']]
+        gy, gx = r['gy'], r['gx']
+        scores = [(float(head[c, gy, gx]), i) for i, c in enumerate(r['cls_ch'])]
+        scores.sort(key=lambda x: (-x[0], x[1]))
+        out.append([i for _, i in scores])
+    return out
+
+
 def max_dev_vs_stored(current, stored):
     """current(raw 재로딩 후 forward) 와 저장된 per-challenge fingerprint 의 최대 편차."""
     md = 0.0

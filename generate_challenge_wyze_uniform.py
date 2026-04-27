@@ -52,6 +52,7 @@ from classify import load_model, preprocess, load_input, CAM_H, CAM_W, CLASS_NAM
 # 같은 ROI 집합을 써야 시도 B/C/U 간 비교 실험이 의미가 있다.
 from generate_challenge_wyze import (
     extract_roi_logits,
+    extract_roi_topk,
     max_dev_vs_stored,
     init_raw,
     save_raw_bin,
@@ -144,6 +145,7 @@ def optimize_raw_uniform(model, raw, rois, target_idx, challenge_idx):
     best = {
         'raw': raw.detach().clone(),
         'logits': None,
+        'topk': None,
         'uniform_gap': float('inf'),
         'obj_sigma': 0.0,
         'target_softmax': None,
@@ -165,6 +167,7 @@ def optimize_raw_uniform(model, raw, rois, target_idx, challenge_idx):
             best['obj_sigma']   = obj_sigma
             best['raw']         = raw.detach().clone()
             best['logits']      = extract_roi_logits(d32, d16, rois)
+            best['topk']        = extract_roi_topk(d32, d16, rois)
             best['iters']       = i + 1
 
             # target ROI 의 observed softmax 기록 (attestation 참고치, 비교용)
@@ -225,6 +228,7 @@ def save_challenge(best, ch_idx, target_idx, rois):
             'observed_softmax_at_target': best['target_softmax'],
             'iters_to_best': best['iters'],
             'rois_logits': best['logits'],   # K 개 전체 관측값. evaluator 는 그대로 사용.
+            'rois_topk':   best['topk'],     # BAIV-style Top-K class index per ROI
         }, f, indent=2)
     return bin_path
 
