@@ -1,0 +1,128 @@
+[
+  {
+    "name": "cifar10_cpu_resnet",
+    "mode": "cpu",
+    "models": ["resnet20_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+   {
+    "name": "cifar10_gpu_resnet",
+    "mode": "gpu",
+    "models": ["resnet20_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_cpu_vgg",
+    "mode": "cpu",
+    "models": ["vgg11_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_gpu_vgg",
+    "mode": "gpu",
+    "models": ["vgg11_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_cpu_wide",
+    "mode": "cpu",
+    "models": ["wideresnet_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_gpu_wide",
+    "mode": "gpu",
+    "models": ["wideresnet_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar100_cpu_efficientnet",
+    "mode": "cpu",
+    "models": ["efficientnetv2_quan"],
+    "max_workers": 3,
+    "challenges": 30
+  },
+  {
+    "name": "cifar100_gpu_efficientnet",
+    "mode": "gpu",
+    "models": ["efficientnetv2_quan"],
+    "max_workers": 3,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_cpu_mixed_two",
+    "mode": "cpu",
+    "models": ["resnet20_quan", "vgg11_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_gpu_mixed_two",
+    "mode": "gpu",
+    "models": ["resnet20_quan", "vgg11_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar100_cpu_tresnet",
+    "mode": "cpu",
+    "models": ["tresnet_quan"],
+    "max_workers": 3,
+    "challenges": 30
+  },
+  {
+    "name": "cifar100_gpu_tresnet",
+    "mode": "gpu",
+    "models": ["tresnet_quan"],
+    "max_workers": 3,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_cpu_mixed_three",
+    "mode": "cpu",
+    "models": ["resnet20_quan", "vgg11_quan", "wideresnet_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar10_gpu_mixed_three",
+    "mode": "gpu",
+    "models": ["resnet20_quan", "vgg11_quan", "wideresnet_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "cifar100_cpu_mixed_two",
+    "mode": "cpu",
+    "models": ["efficientnetv2_quan", "tresnet_quan"],
+    "max_workers": 3,
+    "challenges": 30
+  },
+  {
+    "name": "cifar100_gpu_mixed_two",
+    "mode": "gpu",
+    "models": ["efficientnetv2_quan", "tresnet_quan"],
+    "max_workers": 3,
+    "challenges": 30
+  },
+  {
+    "name": "all_cpu_mixed",
+    "mode": "cpu",
+    "models": ["resnet20_quan", "vgg11_quan", "wideresnet_quan", "efficientnetv2_quan", "tresnet_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  },
+  {
+    "name": "all_gpu_mixed",
+    "mode": "gpu",
+    "models": ["resnet20_quan", "vgg11_quan", "wideresnet_quan", "efficientnetv2_quan", "tresnet_quan"],
+    "max_workers": 5,
+    "challenges": 30
+  }
+]

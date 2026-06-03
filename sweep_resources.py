@@ -8,17 +8,54 @@ RAM(RSS) 과 VRAM 을 시계열로 로깅한다.
   2) interval 초마다 자식별 RSS + 합계 + nvidia-smi VRAM 샘플링
   3) per-run CSV + 마지막에 master summary CSV 저장
 
-사용:
-  python sweep_resources.py
-    --mode both              (cpu | gpu | both, default: both)
-    --max-workers 5          (default: 5; N=1..max_workers 까지)
-    --challenges 100         (자식 1개당 생성할 이미지 수, default: 100)
-    --model resnet20_quan    (default: resnet20_quan, 모든 워커가 같은 모델)
-    --interval 0.5           (샘플링 주기 초, default: 0.5)
-    --logdir bench_logs      (default: ./bench_logs/<timestamp>)
+지원 모델 (generate_challenge_bench.py 와 동일):
+  - resnet20_quan       (CIFAR-10,  32x32)
+  - vgg11_quan          (CIFAR-10,  32x32)
+  - wideresnet_quan     (CIFAR-10,  32x32)
+  - efficientnetv2_quan (CIFAR-100, 224x224)
+  - tresnet_quan        (CIFAR-100, 224x224)
+
+사용 — 단일 sweep:
+  # 동일 모델 N개 (스케일링 곡선)
+  python sweep_resources.py --models resnet20_quan
+
+  # 워커마다 다른 모델 (N=1..K 일 때 round-robin 배정)
+  python sweep_resources.py --models resnet20_quan vgg11_quan wideresnet_quan
+
+  # 큰 모델만 따로
+  python sweep_resources.py --models efficientnetv2_quan --max-workers 3
+
+사용 — 시나리오 일괄 실행 (조건별 자동화):
+  # conditions.json 의 각 시나리오를 순차 실행 후 master summary 생성
+  python sweep_resources.py --config conditions.json
+
+옵션:
+    --config FILE              JSON 시나리오 파일. 지정 시 아래 옵션은
+                                 시나리오 미지정 필드의 기본값으로만 사용
+    --mode both                (cpu | gpu | both, default: both)
+    --max-workers 5            (default: 5; N=1..max_workers 까지)
+    --challenges 100           (자식 1개당 생성할 이미지 수, default: 100)
+    --models resnet20_quan ... (default: ['resnet20_quan']. 다수 지정 시
+                                 워커별 round-robin 배정)
+    --interval 0.5             (샘플링 주기 초, default: 0.5)
+    --logdir bench_logs        (default: ./bench_logs/<timestamp>)
+
+conditions.json 포맷:
+    [
+      {
+        "name": "cifar10_solo",
+        "mode": "both",
+        "models": ["resnet20_quan"],
+        "max_workers": 5,
+        "challenges": 100
+      },
+      { ... 다음 시나리오 ... }
+    ]
+  (각 필드는 생략 가능. 생략 시 CLI 기본값 사용)
 """
 import argparse
 import csv
+import json
 import os
 import shutil
 import subprocess
@@ -26,6 +63,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 
@@ -33,17 +71,112 @@ import psutil
 SCRIPT_DIR = Path(__file__).resolve().parent
 BENCH_SCRIPT = SCRIPT_DIR / "generate_challenge_bench.py"
 
+KNOWN_MODELS = [
+    'resnet20_quan',
+    'vgg11_quan',
+    'wideresnet_quan',
+    'efficientnetv2_quan',
+    'tresnet_quan',
+]
+
 
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument('--config', default=None,
+                   help='JSON 시나리오 파일 경로. 지정 시 시나리오별 일괄 실행')
     p.add_argument('--mode', choices=['cpu', 'gpu', 'both'], default='both')
     p.add_argument('--max-workers', type=int, default=5)
     p.add_argument('--challenges', type=int, default=100)
-    p.add_argument('--model', default='resnet20_quan')
+    p.add_argument('--models', nargs='+', default=['resnet20_quan'],
+                   choices=KNOWN_MODELS,
+                   help='워커별 round-robin 으로 배정될 모델 목록')
+    # 구버전 호환 — 단일 --model 도 받아준다
+    p.add_argument('--model', default=None,
+                   help='(deprecated) --models 의 단일값 alias')
     p.add_argument('--interval', type=float, default=0.5)
     p.add_argument('--logdir', default=None,
                    help='기본: ./bench_logs/<YYYYmmdd_HHMMSS>')
-    return p.parse_args()
+    args = p.parse_args()
+    if args.model is not None:
+        args.models = [args.model]
+    return args
+
+
+def load_conditions(path, cli_defaults):
+    """JSON 시나리오 파일을 읽어 (name, SimpleNamespace) 리스트로 반환.
+    각 필드가 시나리오에 없으면 cli_defaults 에서 채움."""
+    with open(path) as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError("conditions JSON 은 list 여야 합니다.")
+
+    out = []
+    for i, c in enumerate(raw):
+        if not isinstance(c, dict):
+            raise ValueError(f"[{i}] 시나리오는 dict 여야 합니다.")
+        name = c.get('name', f'scenario_{i}')
+        mode = c.get('mode', cli_defaults.mode)
+        if mode not in ('cpu', 'gpu', 'both'):
+            raise ValueError(f"[{name}] mode 가 cpu/gpu/both 가 아님: {mode}")
+        models = c.get('models', cli_defaults.models)
+        for m in models:
+            if m not in KNOWN_MODELS:
+                raise ValueError(f"[{name}] 알 수 없는 모델: {m}")
+        scen = SimpleNamespace(
+            name=name,
+            mode=mode,
+            max_workers=int(c.get('max_workers', cli_defaults.max_workers)),
+            challenges=int(c.get('challenges', cli_defaults.challenges)),
+            models=models,
+            interval=float(c.get('interval', cli_defaults.interval)),
+        )
+        out.append((name, scen))
+    return out
+
+
+def gpu_available():
+    try:
+        subprocess.check_output(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            stderr=subprocess.DEVNULL, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def run_scenario(name, scenario, base_logdir, gpu_ok):
+    """단일 시나리오의 modes × Ns sweep 수행. 결과 rows(list of dict) 반환."""
+    scen_logdir = base_logdir / name
+    scen_logdir.mkdir(parents=True, exist_ok=True)
+
+    # GPU 모드 가능 여부 fallback
+    mode = scenario.mode
+    if mode in ('gpu', 'both') and not gpu_ok:
+        if mode == 'both':
+            print(f"[{name}] ⚠ GPU 사용 불가 → cpu only 로 폴백", flush=True)
+            mode = 'cpu'
+        else:
+            print(f"[{name}] ⚠ GPU 사용 불가 → 스킵", flush=True)
+            return []
+    modes = ['cpu', 'gpu'] if mode == 'both' else [mode]
+    Ns = list(range(1, scenario.max_workers + 1))
+
+    print(f"\n[{name}] plan: modes={modes}  N={Ns}  "
+          f"challenges={scenario.challenges}  models={scenario.models}",
+          flush=True)
+
+    rows = []
+    for m in modes:
+        for n in Ns:
+            row = run_one(m, n, scenario, scen_logdir)
+            row['scenario'] = name
+            rows.append(row)
+    return rows
+
+
+def assign_models(models, n_workers):
+    """워커 인덱스 → 모델 이름. models 리스트를 round-robin 으로 배정."""
+    return [models[w % len(models)] for w in range(n_workers)]
 
 
 def nvidia_smi_used_mb():
@@ -82,7 +215,8 @@ def run_one(mode, n_workers, args, logdir):
     run_dir = logdir / tag
     run_dir.mkdir(parents=True, exist_ok=True)
     csv_path = run_dir / "timeseries.csv"
-    print(f"\n=== {tag} ===", flush=True)
+    worker_models = assign_models(args.models, n_workers)
+    print(f"\n=== {tag}  models={worker_models} ===", flush=True)
 
     # 자식 프로세스용 환경변수
     env_base = os.environ.copy()
@@ -91,25 +225,25 @@ def run_one(mode, n_workers, args, logdir):
     # gpu 모드는 기본 CUDA_VISIBLE_DEVICES 그대로
 
     # 이전 sweep 잔여 데이터 청소 (워커별 디렉터리 비우기)
-    for w in range(n_workers):
-        d = SCRIPT_DIR / "data" / "challenge_bench" / f"{args.model}_w{w}" / "random"
+    for w, m in enumerate(worker_models):
+        d = SCRIPT_DIR / "data" / "challenge_bench" / f"{m}_w{w}" / "random"
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
 
     # 자식 프로세스 실행
     procs = []
-    for w in range(n_workers):
-        log_path = run_dir / f"worker_{w}.log"
+    for w, m in enumerate(worker_models):
+        log_path = run_dir / f"worker_{w}_{m}.log"
         f = open(log_path, 'w')
         p = subprocess.Popen(
             [sys.executable, '-u', str(BENCH_SCRIPT),
-             args.model, str(w), str(args.challenges)],
+             m, str(w), str(args.challenges)],
             cwd=SCRIPT_DIR, env=env_base,
             stdout=f, stderr=subprocess.STDOUT,
         )
         ps = psutil.Process(p.pid)
-        procs.append({'w': w, 'popen': p, 'ps': ps, 'logfile': f})
-        print(f"  spawned worker {w}  pid={p.pid}", flush=True)
+        procs.append({'w': w, 'model': m, 'popen': p, 'ps': ps, 'logfile': f})
+        print(f"  spawned worker {w}  model={m}  pid={p.pid}", flush=True)
 
     # 샘플링 루프
     t0 = time.time()
@@ -153,6 +287,7 @@ def run_one(mode, n_workers, args, logdir):
     summary = {
         'mode': mode,
         'n_workers': n_workers,
+        'models': '|'.join(worker_models),
         'wall_time_s': round(wall, 2),
         'peak_total_rss_gb': round(peak_total, 3),
         'peak_per_worker_avg_gb':
@@ -185,54 +320,61 @@ def main():
     logdir.mkdir(parents=True, exist_ok=True)
     print(f"logdir: {logdir}", flush=True)
 
-    # GPU 사용 가능 여부 사전 체크 (gpu/both 모드일 때)
-    if args.mode in ('gpu', 'both'):
-        try:
-            subprocess.check_output(
-                ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
-                stderr=subprocess.DEVNULL, timeout=2)
-        except Exception:
-            print("⚠ nvidia-smi 호출 실패. GPU 모드 건너뜀.", flush=True)
-            args.mode = 'cpu' if args.mode == 'both' else None
-            if args.mode is None:
-                sys.exit(1)
+    # 시나리오 빌드
+    if args.config:
+        scenarios = load_conditions(args.config, args)
+        print(f"loaded {len(scenarios)} scenarios from {args.config}:", flush=True)
+        for name, scen in scenarios:
+            print(f"  - {name}: mode={scen.mode} N=1..{scen.max_workers} "
+                  f"models={scen.models} challenges={scen.challenges}",
+                  flush=True)
+    else:
+        scenarios = [('default', SimpleNamespace(
+            name='default',
+            mode=args.mode,
+            max_workers=args.max_workers,
+            challenges=args.challenges,
+            models=args.models,
+            interval=args.interval,
+        ))]
 
-    modes = ['cpu', 'gpu'] if args.mode == 'both' else [args.mode]
-    Ns = list(range(1, args.max_workers + 1))
+    # GPU 사용 가능 여부 사전 체크 (한 번만)
+    gpu_ok = gpu_available()
+    if not gpu_ok:
+        print("⚠ nvidia-smi 호출 실패 — GPU 시나리오는 폴백/스킵됨", flush=True)
 
-    print(f"sweep plan: modes={modes}  N={Ns}  challenges={args.challenges}  "
-          f"model={args.model}", flush=True)
-
-    # master summary
+    # master summary (시나리오별 column 포함)
     master_path = logdir / "summary.csv"
-    fields = ['mode', 'n_workers', 'wall_time_s', 'peak_total_rss_gb',
-              'peak_per_worker_avg_gb', 'peak_per_worker_max_gb',
-              'peak_vram_mb', 'returncodes']
+    fields = ['scenario', 'mode', 'n_workers', 'models', 'wall_time_s',
+              'peak_total_rss_gb', 'peak_per_worker_avg_gb',
+              'peak_per_worker_max_gb', 'peak_vram_mb', 'returncodes']
 
-    rows = []
-    for mode in modes:
-        for n in Ns:
-            row = run_one(mode, n, args, logdir)
-            rows.append(row)
-            # 즉시 master 갱신 (도중 중단 대비)
-            with open(master_path, 'w', newline='') as f:
-                wr = csv.DictWriter(f, fieldnames=fields)
-                wr.writeheader()
-                for r in rows:
-                    wr.writerow({k: r[k] for k in fields})
+    all_rows = []
+    for name, scen in scenarios:
+        rows = run_scenario(name, scen, logdir, gpu_ok)
+        all_rows.extend(rows)
+        # 즉시 master 갱신 (도중 중단 대비)
+        with open(master_path, 'w', newline='') as f:
+            wr = csv.DictWriter(f, fieldnames=fields)
+            wr.writeheader()
+            for r in all_rows:
+                wr.writerow({k: r.get(k, '') for k in fields})
 
     # 최종 요약 출력
-    print(f"\n{'='*60}\nDONE → {master_path}\n{'='*60}", flush=True)
-    print(f"{'mode':<5} {'N':>2}  {'wall(s)':>8}  "
+    print(f"\n{'='*80}\nDONE → {master_path}\n{'='*80}", flush=True)
+    print(f"{'scenario':<22} {'mode':<5} {'N':>2}  {'wall(s)':>8}  "
           f"{'peak_RSS(GB)':>13}  {'per_w_avg':>10}  "
-          f"{'per_w_max':>10}  {'peak_VRAM(MB)':>14}")
-    for r in rows:
-        print(f"{r['mode']:<5} {r['n_workers']:>2}  "
+          f"{'per_w_max':>10}  {'peak_VRAM(MB)':>14}  models")
+    last_scen = None
+    for r in all_rows:
+        scen_label = r['scenario'] if r['scenario'] != last_scen else ''
+        last_scen = r['scenario']
+        print(f"{scen_label:<22} {r['mode']:<5} {r['n_workers']:>2}  "
               f"{r['wall_time_s']:>8.1f}  "
               f"{r['peak_total_rss_gb']:>13.2f}  "
               f"{r['peak_per_worker_avg_gb']:>10.2f}  "
               f"{r['peak_per_worker_max_gb']:>10.2f}  "
-              f"{r['peak_vram_mb']:>14}")
+              f"{r['peak_vram_mb']:>14}  {r['models']}")
 
 
 if __name__ == "__main__":
