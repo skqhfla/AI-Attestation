@@ -209,6 +209,21 @@ def gather_rss_gb(ps_objs):
     return rss_per_proc
 
 
+def read_worker_timings(worker_models):
+    """bench 자식 프로세스가 남긴 _timing.json 들을 읽어 리스트로 반환.
+    누락된 워커는 스킵."""
+    out = []
+    for w, m in enumerate(worker_models):
+        path = SCRIPT_DIR / 'data' / 'challenge_bench' / f'{m}_w{w}' / '_timing.json'
+        if path.exists():
+            try:
+                with open(path) as f:
+                    out.append(json.load(f))
+            except (OSError, json.JSONDecodeError):
+                pass
+    return out
+
+
 def run_one(mode, n_workers, args, logdir):
     """단일 (mode, n_workers) 실행. 요약 dict 반환."""
     tag = f"{mode}_n{n_workers}"
@@ -284,11 +299,30 @@ def run_one(mode, n_workers, args, logdir):
         pr['logfile'].close()
 
     wall = time.time() - t0
+
+    # bench 자식이 남긴 워커별 timing JSON 집계
+    timings = read_worker_timings(worker_models)
+    gen_times = [t['gen_time_s'] for t in timings]
+    pred_times = [t['pred_time_s'] for t in timings]
+    total_times = [t['total_time_s'] for t in timings]
+
+    def _avg(xs):
+        return round(sum(xs) / len(xs), 3) if xs else 0.0
+
+    def _mx(xs):
+        return round(max(xs), 3) if xs else 0.0
+
     summary = {
         'mode': mode,
         'n_workers': n_workers,
         'models': '|'.join(worker_models),
         'wall_time_s': round(wall, 2),
+        'gen_time_avg_s': _avg(gen_times),
+        'gen_time_max_s': _mx(gen_times),
+        'pred_time_avg_s': _avg(pred_times),
+        'pred_time_max_s': _mx(pred_times),
+        'per_worker_total_avg_s': _avg(total_times),
+        'per_worker_total_max_s': _mx(total_times),
         'peak_total_rss_gb': round(peak_total, 3),
         'peak_per_worker_avg_gb':
             round(sum(peak_per_worker) / n_workers, 3) if n_workers else 0,
@@ -297,9 +331,13 @@ def run_one(mode, n_workers, args, logdir):
         'peak_vram_mb': peak_vram,
         'returncodes': [pr['popen'].returncode for pr in procs],
     }
-    print(f"  → peak total RSS = {summary['peak_total_rss_gb']:.2f} GB  "
+    print(f"  → gen(max)={summary['gen_time_max_s']:.2f}s  "
+          f"pred(max)={summary['pred_time_max_s']:.2f}s  "
+          f"worker_total(max)={summary['per_worker_total_max_s']:.2f}s  "
+          f"wall={summary['wall_time_s']:.1f}s",
+          flush=True)
+    print(f"     peak total RSS = {summary['peak_total_rss_gb']:.2f} GB  "
           f"peak VRAM = {summary['peak_vram_mb']} MB  "
-          f"wall = {summary['wall_time_s']:.1f}s  "
           f"rc = {summary['returncodes']}",
           flush=True)
     # 실패한 워커 있으면 로그 위치 안내
@@ -346,6 +384,9 @@ def main():
     # master summary (시나리오별 column 포함)
     master_path = logdir / "summary.csv"
     fields = ['scenario', 'mode', 'n_workers', 'models', 'wall_time_s',
+              'gen_time_avg_s', 'gen_time_max_s',
+              'pred_time_avg_s', 'pred_time_max_s',
+              'per_worker_total_avg_s', 'per_worker_total_max_s',
               'peak_total_rss_gb', 'peak_per_worker_avg_gb',
               'peak_per_worker_max_gb', 'peak_vram_mb', 'returncodes']
 
@@ -361,20 +402,22 @@ def main():
                 wr.writerow({k: r.get(k, '') for k in fields})
 
     # 최종 요약 출력
-    print(f"\n{'='*80}\nDONE → {master_path}\n{'='*80}", flush=True)
-    print(f"{'scenario':<22} {'mode':<5} {'N':>2}  {'wall(s)':>8}  "
-          f"{'peak_RSS(GB)':>13}  {'per_w_avg':>10}  "
-          f"{'per_w_max':>10}  {'peak_VRAM(MB)':>14}  models")
+    print(f"\n{'='*110}\nDONE → {master_path}\n{'='*110}", flush=True)
+    print(f"{'scenario':<24} {'mode':<4} {'N':>2}  "
+          f"{'gen_max(s)':>10}  {'pred_max(s)':>11}  "
+          f"{'wTotal_max':>10}  {'wall(s)':>7}  "
+          f"{'peak_RSS(GB)':>12}  {'VRAM(MB)':>9}")
     last_scen = None
     for r in all_rows:
         scen_label = r['scenario'] if r['scenario'] != last_scen else ''
         last_scen = r['scenario']
-        print(f"{scen_label:<22} {r['mode']:<5} {r['n_workers']:>2}  "
-              f"{r['wall_time_s']:>8.1f}  "
-              f"{r['peak_total_rss_gb']:>13.2f}  "
-              f"{r['peak_per_worker_avg_gb']:>10.2f}  "
-              f"{r['peak_per_worker_max_gb']:>10.2f}  "
-              f"{r['peak_vram_mb']:>14}  {r['models']}")
+        print(f"{scen_label:<24} {r['mode']:<4} {r['n_workers']:>2}  "
+              f"{r['gen_time_max_s']:>10.2f}  "
+              f"{r['pred_time_max_s']:>11.2f}  "
+              f"{r['per_worker_total_max_s']:>10.2f}  "
+              f"{r['wall_time_s']:>7.1f}  "
+              f"{r['peak_total_rss_gb']:>12.2f}  "
+              f"{r['peak_vram_mb']:>9}")
 
 
 if __name__ == "__main__":

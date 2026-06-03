@@ -12,6 +12,7 @@ CPU/GPU 전환은 환경변수 CUDA_VISIBLE_DEVICES 로 제어:
   CUDA_VISIBLE_DEVICES=0    python generate_challenge_bench.py ...   # GPU0
 """
 
+import json
 import os
 import re
 import sys
@@ -169,5 +170,25 @@ def load_and_predict():
 t1 = time.time()
 shape, _ = load_and_predict()
 t_pred = time.time() - t1
+t_total = time.time() - t0
 print(f"[w{worker_id}] predict done in {t_pred:.2f}s  batch={shape}", flush=True)
-print(f"[w{worker_id}] TOTAL {time.time() - t0:.2f}s", flush=True)
+print(f"[w{worker_id}] TOTAL {t_total:.2f}s", flush=True)
+
+# ── sweep_resources.py 가 읽어가는 timing 파일 ─────────────────────────────
+# save_dir 의 부모(./data/challenge_bench/<model>_w<id>/) 에 저장.
+timing = {
+    'worker_id': worker_id,
+    'model_name': model_name,
+    'num_challenges': num_challenges,
+    'gen_time_s': round(t_gen, 3),
+    'pred_time_s': round(t_pred, 3),
+    'total_time_s': round(t_total, 3),
+    'batch_shape': list(shape),
+}
+timing_path = os.path.join(os.path.dirname(save_dir), '_timing.json')
+try:
+    with open(timing_path, 'w') as f:
+        json.dump(timing, f)
+    print(f"[w{worker_id}] timing → {timing_path}", flush=True)
+except OSError as e:
+    print(f"[w{worker_id}] WARN: timing write failed: {e}", flush=True)
