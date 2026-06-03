@@ -18,6 +18,7 @@ import sys
 import time
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from PIL import Image
@@ -27,6 +28,40 @@ import models  # noqa: F401  (resolve package path)
 from models.quan_resnet_cifar import resnet20_quan
 from models.quan_vgg_cifar import vgg11_bn_quan
 from models.quan_wideresnet import wideresnet_quan
+from models.quantization import quan_Conv2d, quan_Linear
+
+
+def quantize(model):
+    """attestation/generate_challenge.py 와 동일.
+    Conv2d / Linear 를 quan_* 버전으로 in-place 치환."""
+    for name, child in model.named_children():
+        if isinstance(child, nn.Conv2d):
+            ql = quan_Conv2d(
+                in_channels=child.in_channels,
+                out_channels=child.out_channels,
+                kernel_size=child.kernel_size,
+                stride=child.stride,
+                padding=child.padding,
+                dilation=child.dilation,
+                groups=child.groups,
+                bias=child.bias is not None,
+            )
+            ql.weight.data = child.weight.data.clone()
+            if child.bias is not None:
+                ql.bias.data = child.bias.data.clone()
+            setattr(model, name, ql)
+        elif isinstance(child, nn.Linear):
+            ql = quan_Linear(
+                in_features=child.in_features,
+                out_features=child.out_features,
+                bias=child.bias is not None,
+            )
+            ql.weight.data = child.weight.data.clone()
+            if child.bias is not None:
+                ql.bias.data = child.bias.data.clone()
+            setattr(model, name, ql)
+        else:
+            quantize(child)
 
 
 # ── 인자 파싱 ───────────────────────────────────────────────────────────────
@@ -41,22 +76,46 @@ print(f"[w{worker_id}] model={model_name}  device={device}  N={num_challenges}",
 # ── 모델 로드 ───────────────────────────────────────────────────────────────
 num_classes = 10
 image_size = (32, 32)
-save_root = './save/2025-08-19'
+save_root = './save/2025-09-09'
 
 if model_name == 'resnet20_quan':
     model = resnet20_quan(num_classes=num_classes)
-    model_path = 'cifar10_resnet20_quan_160_binarized'
+    model_path = 'resnet20_cifar10_best_weights'
 elif model_name == 'vgg11_quan':
     model = vgg11_bn_quan(num_classes=num_classes)
-    model_path = 'cifar10_vgg11_quan_160_binarized'
+    model_path = 'vgg11_cifar10_best_weights'
 elif model_name == 'wideresnet_quan':
     model = wideresnet_quan(depth=28, num_classes=num_classes)
-    model_path = 'cifar10_wideresnet_quan_160_binarized'
+    model_path = 'wideresnet_cifar10_best_weights'
+elif model_name == "efficientnetv2_quan":
+    # attestation/generate_challenge.py 와 동일 로딩.
+    # torchvision efficientnet_v2_l → classifier 교체 → quantize() in-place.
+    # CIFAR-100, 224x224 입력.
+    from torchvision.models import efficientnet_v2_l
+    num_classes = 100
+    image_size = (224, 224)
+    model = efficientnet_v2_l()
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=0.25, inplace=True),
+        nn.Linear(model.classifier[-1].in_features, num_classes),
+    )
+    quantize(model)
+    model_path = 'efficientnetv2_cifar100_best_weights'
+elif model_name == "tresnet_quan":
+    # attestation/generate_challenge.py 와 동일 로딩.
+    # timm tresnet_l (pretrained) → quantize() in-place.
+    # CIFAR-100, 224x224 입력.
+    import timm
+    num_classes = 100
+    image_size = (224, 224)
+    model = timm.create_model('tresnet_l', pretrained=True, num_classes=num_classes)
+    quantize(model)
+    model_path = 'tresnet_cifar100_best_weights'
 else:
     raise ValueError(f"지원되지 않는 모델 이름: {model_name}")
 
 model = model.to(device).eval()
-checkpoint_path = f"{save_root}/{model_path}/model_best.pth.tar"
+checkpoint_path = f"{save_root}/{model_path}.pth"
 ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 model.load_state_dict(ckpt['state_dict'] if 'state_dict' in ckpt else ckpt)
 print(f"[w{worker_id}] checkpoint loaded: {checkpoint_path}", flush=True)
